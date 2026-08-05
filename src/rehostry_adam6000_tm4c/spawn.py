@@ -86,11 +86,11 @@ def spawn_env(halucinator_src: Optional[str] = None,
     # A 430 KB image with a handful of breakpoints: the default global
     # per-instruction hook dominates runtime.
     env.setdefault("HAL_FAST_BP", "1")
-    # Bound the emulator's instruction chunks so it returns to its dispatch loop
-    # and can drain a queued interrupt (playbook §2.99).
-    env.setdefault("HAL_IRQ_CHUNK", "100000")
     # ARMv7E-M with an FPU: the reset handler's first act is to enable CP10/CP11.
     env.setdefault("HAL_CORTEXM_CPU_MODEL", "UC_CPU_ARM_CORTEX_M4")
+    # Bound the emulator's instruction chunks so it returns to its dispatch
+    # loop and can drain a queued interrupt (playbook §2.99).
+    env.setdefault("HAL_IRQ_CHUNK", "20000")
     if extra:
         env.update(extra)
     return env

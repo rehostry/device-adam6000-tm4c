@@ -7,4 +7,25 @@ symbols:
   27436: emac0_irq_handler
   31964: systick_handler
   61608: reset_handler
-  61628: fault_handler_spin
+  61628: nmi_spin
+  61630: hardfault_spin
+  61632: default_handler_spin
+  120242: lwip_trap_spin
+  # --- synthetic: TivaWare ROM call landing pads ---
+  16843008: rom_UARTCharPut   # APITABLE[1] entry 0
+  16843028: rom_UARTConfigSetExpClk   # APITABLE[1] entry 5
+  16843036: rom_UARTEnable   # APITABLE[1] entry 7
+  16843112: rom_UARTBusy   # APITABLE[1] entry 26
+  16843264: rom_SSIDataPut   # APITABLE[2] entry 0
+  16843300: rom_SSIDataGet   # APITABLE[2] entry 9
+  16843776: rom_GPIOPinWrite   # APITABLE[4] entry 0
+  16843860: rom_GPIOPinTypeUART   # APITABLE[4] entry 21
+  16843880: rom_GPIOPinConfigure   # APITABLE[4] entry 26
+  16846096: rom_SysCtlPeripheralPresent   # APITABLE[13] entry 4
+  16846100: rom_SysCtlPeripheralReset   # APITABLE[13] entry 5
+  16846104: rom_SysCtlPeripheralEnable   # APITABLE[13] entry 6
+  16846220: rom_SysCtlPeripheralReady   # APITABLE[13] entry 35
+  16847104: rom_uDMAChannelTransferSet   # APITABLE[17] entry 0
+  16847124: rom_uDMAChannelEnable   # APITABLE[17] entry 5
+  16847180: rom_uDMAIntStatus   # APITABLE[17] entry 19
+  16847184: rom_uDMAIntClear   # APITABLE[17] entry 20

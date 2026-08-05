@@ -80,8 +80,75 @@ RECOVERED_SYMBOLS = {
     0x0000F0A8: ("reset_handler", bytes.fromhex("0348")),
     0x00007CDC: ("systick_handler", bytes.fromhex("30b5")),
     0x00006B2C: ("emac0_irq_handler", bytes.fromhex("feb5")),
-    0x0000F0BC: ("fault_handler_spin", bytes.fromhex("fee7")),
+    0x0000F0BC: ("nmi_spin", bytes.fromhex("fee7")),
+    0x0000F0BE: ("hardfault_spin", bytes.fromhex("fee7")),
+    # The SHARED default handler: every exception slot that is not NMI,
+    # HardFault or SysTick points here, including all 111 unused external IRQs.
+    # It is a `b .`, so reaching it is a silent hang rather than a crash.
+    0x0000F0C0: ("default_handler_spin", bytes.fromhex("fee7")),
+    # A second `b .`, in the middle of the lwIP init path. Nothing in the image
+    # branches or points to it, so it is reached indirectly -- worth a probe.
+    0x0001D5B2: ("lwip_trap_spin", bytes.fromhex("fee7")),
 }
+
+# Size of the generated `bx lr` stub region. Must match the config's
+# `rom_stubs` region and tiva_rom.py's STUB_SIZE.
+ROM_STUB_SIZE = 0x4000
+ROM_STUB_BASE = 0x01010000
+ROM_ENTRIES_PER_TABLE = 64
+
+# SYNTHETIC symbols: landing pads for TivaWare ROM calls. These addresses are
+# not in the firmware -- they are ours, handed to the firmware by
+# peripheral_models/tiva_rom.py when it answers the ROM API table -- so unlike
+# RECOVERED_SYMBOLS there are no bytes to guard. What IS pinned is the identity:
+# each was named from the arguments at its call site, and the comment records
+# the evidence.
+#
+#   (api table, entry) -> name
+ROM_STUBS = {
+    # APITABLE[1] is the UART table.
+    (1, 0): "rom_UARTCharPut",        # tail-called with (UART0 base, char)
+    (1, 5): "rom_UARTConfigSetExpClk",  # called with (base, clk, 115200, 0x60)
+    (1, 7): "rom_UARTEnable",         # called with (base) right after config
+    (1, 26): "rom_UARTBusy",          # spun on: `do {} while (f(base) != 0)`
+    # APITABLE[4] is the GPIO table.
+    (4, 0): "rom_GPIOPinWrite",       # `f(0x40066000, 2, 0)` -- the flash's
+                                      # chip select, driven around every SPI
+                                      # transaction
+    (4, 21): "rom_GPIOPinTypeUART",   # called with (0x40004000 = GPIO A, 0x3)
+    (4, 26): "rom_GPIOPinConfigure",  # called with 0x00000001 / 0x00000401,
+                                      # which are TivaWare's GPIO_PA0_U0RX and
+                                      # GPIO_PA1_U0TX pin-mux encodings
+    # APITABLE[2] is the SSI table. SSI3 (0x4000B000) carries the serial NOR
+    # flash, with chip-select on GPIO Q pin 1 (0x40066000, pins=2).
+    (2, 0): "rom_SSIDataPut",         # `f(base, byte)` in the transfer helper
+    (2, 9): "rom_SSIDataGet",         # `f(base, &byte)` right after the put
+    # APITABLE[17] is the uDMA table, and it is how the serial flash is really
+    # read -- the byte-at-a-time SSI path is only used for short commands.
+    (17, 0): "rom_uDMAChannelTransferSet",  # five args: (chIdx, mode, src, dst,
+                                            # size) -- the 5th on the stack
+    (17, 5): "rom_uDMAChannelEnable",       # called once per channel, with 14
+                                            # and 15 (SSI3 RX and TX)
+    (17, 19): "rom_uDMAIntStatus",          # no args; the firmware tests bit 14
+                                            # in `while (!(f() & 1<<14) &&
+                                            # elapsed <= 500)`
+    (17, 20): "rom_uDMAIntClear",           # called with the mask 0xC000,
+                                            # i.e. channels 14 and 15
+    # APITABLE[13] is the SysCtl table.
+    (13, 4): "rom_SysCtlPeripheralPresent",  # `if (f(EMAC0) == 0) b .`  -- the
+                                             # firmware hangs forever if its
+                                             # Ethernet MAC reports absent
+    (13, 5): "rom_SysCtlPeripheralReset",    # called just before Enable
+    (13, 6): "rom_SysCtlPeripheralEnable",   # called with 0xF0000800, a
+                                             # SYSCTL_PERIPH_* constant
+    (13, 35): "rom_SysCtlPeripheralReady",   # `do {} while (!f(periph))` right
+                                             # after Reset+Enable
+}
+
+
+def rom_stub_addr(table: int, entry: int) -> int:
+    """Must match tiva_rom.py:stub_for (a test pins the two together)."""
+    return ROM_STUB_BASE + (table * ROM_ENTRIES_PER_TABLE + entry) * 4
 
 DEFAULT_IMAGE = ("/Users/user/Development/firmware-incoming/F4-ics-metering/"
                  "advantech-adam6000-dio-v615/adam6000_dio_v615B23.bin")
@@ -176,6 +243,35 @@ def run(a: argparse.Namespace) -> int:
     shutil.copyfile(a.image, bin_path)
     print(f"wrote {bin_path}")
 
+    # --- the ROM stub blob ------------------------------------------------
+    # The firmware calls TivaWare driverlib through the on-chip ROM, which we
+    # do not have. peripheral_models/tiva_rom.py answers the ROM's API table
+    # with pointers into this region, one distinct address per (table, entry),
+    # so an unimplemented ROM call lands on its own `bx lr` and returns
+    # immediately instead of branching into whatever the busy-wait breaker last
+    # returned. (That is not a hypothetical: with the ROM unmodelled the
+    # firmware dereferenced a breaker value into its own vector table and
+    # called the default handler, which is a `b .`.)
+    #
+    # Each stub is `movs r0, #0` + `bx lr` -- four bytes, which is exactly the
+    # spacing of one API-table entry.
+    #
+    # RETURNING ZERO IS THE WHOLE POINT, and a bare `bx lr` is actively wrong.
+    # `bx lr` leaves r0 holding the function's FIRST ARGUMENT, which for
+    # driverlib is almost always a peripheral base address -- a large non-zero
+    # number. Firmware polls driverlib constantly in the shape
+    # `while (SomethingBusy(base))` / `while (DataGetNonBlocking(base, &x))`,
+    # and every one of those loops then spins forever. It cost two of them here
+    # (UARTBusy, and an SSI FIFO drain) before the default was changed; zero is
+    # the right answer for "not busy", "nothing available" and "no error" alike.
+    # A call that genuinely must return non-zero announces itself, and gets a
+    # handler in bp_handlers/tiva_rom_api.py.
+    stub_path = os.path.join(outdir, "rom_stubs.bin")
+    with open(stub_path, "wb") as fh:
+        fh.write(bytes.fromhex("00207047") * (ROM_STUB_SIZE // 4))
+    print(f"wrote {stub_path}  ({ROM_STUB_SIZE} bytes: "
+          f"`movs r0,#0; bx lr` per entry)")
+
     yaml_path = os.path.join(outdir, "adam6000_tm4c_addrs.yaml")
     with open(yaml_path, "w") as fh:
         fh.write("# Generated by tools/extract_firmware.py -- do not edit.\n"
@@ -186,7 +282,14 @@ def run(a: argparse.Namespace) -> int:
                  "symbols:\n")
         for addr in sorted(RECOVERED_SYMBOLS):
             fh.write(f"  {addr}: {RECOVERED_SYMBOLS[addr][0]}\n")
-    print(f"wrote {yaml_path}  ({len(RECOVERED_SYMBOLS)} symbols)")
+        fh.write("  # --- synthetic: TivaWare ROM call landing pads ---\n")
+        for (table, entry), name in sorted(ROM_STUBS.items()):
+            fh.write(f"  {rom_stub_addr(table, entry)}: {name}"
+                     f"   # APITABLE[{table}] entry {entry}\n")
+    print(f"wrote {yaml_path}  ({len(RECOVERED_SYMBOLS)} recovered + "
+          f"{len(ROM_STUBS)} synthetic ROM stubs)")
+    for (table, entry), name in sorted(ROM_STUBS.items()):
+        print(f"    0x{rom_stub_addr(table, entry):08x}  {name}")
     return 0
 
 
