@@ -1,0 +1,2 @@
+include LICENSE README.md STATUS.md PROVENANCE.md
+recursive-include src/rehostry_adam6000_tm4c/configs *.yaml

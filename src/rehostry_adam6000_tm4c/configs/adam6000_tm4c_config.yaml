@@ -1,0 +1,77 @@
+# Copyright 2026 Christopher Wright
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Advantech ADAM-6050 (ADAM-6000 series DIO) -- HALucinator config, unicorn.
+#
+# Target: TI **TM4C129x** (Tiva C Connected, Cortex-M4F) running Advantech's
+# bare-metal application: TivaWare + lwIP + an HTTP server + Modbus/TCP + SNMP
+# + mbedTLS 3.6.0. An Ethernet remote digital-I/O module.
+#
+# THE SoC WAS IDENTIFIED, NOT ASSUMED -- see tools/extract_firmware.py:
+#   * GPIO ports A..Q are addressed; only TM4C129x has ports past J.
+#   * EMAC0 at 0x400EC000 -- an on-chip Ethernet MAC, TM4C129x only.
+#   * The single live external interrupt is IRQ 40, which is TM4C129x's EMAC0.
+#   * The image contains the literal `Cortex-M4` and TivaWare's `g_ui32*`
+#     Hungarian notation throughout its debug output.
+machine:
+  arch: cortex-m3                 # HALucinator's M-profile support; the CPU
+                                  # model is pinned to Cortex-M4 by spawn.py
+                                  # (the reset handler's first act is to enable
+                                  # CP10/CP11, so this part has an FPU).
+  cpu_model: cortex-m3
+  entry_addr: 0x0000F0A9          # Reset_Handler | Thumb
+  init_sp: 0x2001C46C             # vector[0]
+  vector_base: 0x00000000         # flash at zero on Tiva
+  interrupt_controller:
+    type: cortex_m
+
+memories:
+  # 1 MB flash on a TM4C1294; the vendor image occupies the first 421 KB.
+  flash:
+    base_addr: 0x00000000
+    file: adam6000_tm4c.bin
+    permissions: rwx
+    size: 0x00100000
+  sram:
+    base_addr: 0x20000000
+    permissions: rw-
+    size: 0x00040000
+  halucinator-irq:
+    base_addr: 0x03ffc000
+    size: 0x00004000
+  halucinator:
+    base_addr: 0x04000000
+    size: 0x00100000
+
+peripherals:
+  # The TM4C's masked ROM. The firmware calls TivaWare driverlib through the
+  # ROM API table at 0x01000010 -- a probe region for now, to measure how deep
+  # that dependency goes.
+  rom:
+    base_addr: 0x01000000
+    emulate: rehostry_adam6000_tm4c.peripheral_models.soc_catchall.SocCatchAll
+    permissions: rw-
+    size: 0x00008000
+
+  # Everything from GPIO through EMAC0 to SYSCTL, in one window for now --
+  # the bare-march starts here and each gate gets a real model as it appears.
+  soc:
+    base_addr: 0x40000000
+    emulate: rehostry_adam6000_tm4c.peripheral_models.soc_catchall.SocCatchAll
+    permissions: rw-
+    size: 0x00100000
+  # AES/DES/SHA accelerators (TM4C129x puts them well above the APB window).
+  crypto:
+    base_addr: 0x44000000
+    emulate: rehostry_adam6000_tm4c.peripheral_models.soc_catchall.SocCatchAll
+    permissions: rw-
+    size: 0x00040000
+  # The whole 1 MB: the backend maps the PPB in one call, so a partial claim
+  # leaves the remainder unmapped (playbook §2.68).
+  ppb:
+    base_addr: 0xE0000000
+    emulate: rehostry_adam6000_tm4c.peripheral_models.soc_catchall.SocCatchAll
+    permissions: rw-
+    size: 0x00100000
+
+intercepts: []
