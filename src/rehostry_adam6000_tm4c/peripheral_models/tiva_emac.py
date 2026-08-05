@@ -101,6 +101,13 @@ DEVICE_MAC = bytes.fromhex(os.environ.get("HAL_ADAM_MAC", "00d0c9feffff"))
 RING_SCAN = 16
 
 
+# How much of each transmitted frame to log. The default keeps the log
+# readable; set HAL_ADAM_TX_HEX=1600 to capture whole frames, which is what
+# shows a protocol response sitting in the guest's own transmit buffer --
+# register-level evidence rather than the peer's reassembly of it.
+TX_LOG_BYTES = int(os.environ.get("HAL_ADAM_TX_HEX", "32"), 0)
+
+
 def descriptor_stride() -> int:
     """Bytes per descriptor (``HAL_ADAM_EMAC_DESC_STRIDE``).
 
@@ -258,7 +265,7 @@ class TivaEmac(SocCatchAll):
             self.tx_count += 1
             if self.tx_count <= 24:
                 log.info("EMAC TX #%d: %d bytes %s", self.tx_count, len(frame),
-                         frame[:32].hex())
+                         frame[:TX_LOG_BYTES].hex())
             self.peer.on_device_frame(frame)
         # Give the descriptor back to the CPU, which is what the DMA does when
         # the frame is on the wire, and raise the transmit-complete status the

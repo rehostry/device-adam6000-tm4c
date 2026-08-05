@@ -50,6 +50,49 @@ while an unsupported function code is refused as *illegal function* (1), with
 the function byte echoed and the top bit set in both. Nothing that merely
 pretends to be a Modbus server tells those apart.
 
+## What the round-trip does and does not show
+
+**Does.** The response bytes are the firmware's, captured at the bus boundary —
+read by `tiva_emac._transmit` out of the guest's own transmit descriptor buffer,
+not from the peer's reassembly one layer up:
+
+```
+EMAC TX #6: 63 bytes
+  0200005e1002 00d0c9feffff 0800            dst, src (the device), IPv4
+  45...0a000001 0a000002                    from 10.0.0.1
+  01f6 9c40 ... 5018 09f4 ....              TCP sport 502, the device's own seq
+  000100000003 01 81 02                     <- the Modbus response
+```
+
+And the firmware genuinely parses the request rather than emitting a constant.
+Both MBAP fields track across values, and the exception code still
+discriminates by function:
+
+| sent | received |
+| --- | --- |
+| txn `0xbeef`, unit 7, fc `0x01` | `beef 0000 0003 07 81 02` |
+| txn `0x0042`, unit 19, fc `0x01` | `0042 0000 0003 13 81 02` |
+| txn `0x7a3c`, unit 200, fc `0x41` | `7a3c 0000 0003 c8 c1 01` |
+
+The firmware carried both header fields through, recomputed the length, OR'd
+the function byte, and chose the exception code from its own dispatch table.
+No host code could have synthesised that.
+
+**Does not.** What round-trips is the **protocol** layer — MBAP framing and
+function dispatch — not the **application** layer:
+
+- **No Modbus data handler is ever reached.** Address validation rejects first,
+  so the coil and register read/write code — what an ADAM-6050 is actually for
+  — is entirely unexercised.
+- **The attack does not land a physical action.** Modbus/TCP's lack of
+  authentication is real and is why this device is worth rehosting, but this
+  rehost demonstrates reaching the parser, not driving a relay.
+- **This is a weaker M4 than device-bmxnoe**, whose M4 was FC03 returning real
+  register data. The gap is entirely the blank serial flash.
+
+Closing that gap needs the serial NOR contents from a real module. Everything
+above it already works.
+
 ## The boot, and the network coming up
 
 ```

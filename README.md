@@ -97,6 +97,12 @@ the raw exchange. All 18 checks pass on a working tree:
   data would make the output look better and would be a fabrication. The
   firmware says so itself (`GetDevInfo() Err`, `g_usModel = 255`), and the
   exception-code discrimination shows the real parser is running regardless.
+- **What round-trips is the protocol layer, not the application layer.** MBAP
+  framing and function dispatch are exercised end to end and proven to be the
+  firmware's own; the Modbus data handlers behind address validation are never
+  reached, so nothing here demonstrates driving an output. The
+  no-authentication property of Modbus/TCP is real, but this rehost shows
+  reaching the parser, not actuating a relay.
 - The web panel renders device state as JSON rather than a coil grid.
 
 ## Debugging aids
