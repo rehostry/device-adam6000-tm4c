@@ -120,10 +120,17 @@ the raw exchange. All 18 checks pass on a working tree:
   ```
 
   Twelve inputs, six outputs, model index 0 of its own 6050/6051/6052/6060/6066
-  table. But the boot then stops at `sntp sync : 255` and never reaches
-  `IP ready.`, so there is no Modbus at all on this path. It is therefore
-  **opt-in** (`HAL_ADAM_PROFILE=1`); the default remains the erased part, which
-  boots and answers.
+  table. The boot now runs all the way to `IP ready.` on this path too, given
+  the extra config: add `-c adam6000_tm4c_profile.yaml`, which ticks the clock
+  from inside the firmware's millisecond delay loop (see that file for why it
+  is not in the main config).
+
+  **What still does not work is Modbus itself.** With a profile the device
+  answers every SYN on port 502 with RST — the server never binds, even though
+  lwIP is up and the interface has an address. That is the open question on
+  this path, and it is a different one from the boot stalls that preceded it.
+  Provisioning is therefore **opt-in** (`HAL_ADAM_PROFILE=1`); the default
+  remains the erased part, which boots and answers.
 - The web panel renders device state as JSON rather than a coil grid.
 
 ## Debugging aids
