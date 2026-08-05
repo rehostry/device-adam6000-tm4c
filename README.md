@@ -103,6 +103,16 @@ the raw exchange. All 18 checks pass on a working tree:
   reached, so nothing here demonstrates driving an output. The
   no-authentication property of Modbus/TCP is real, but this rehost shows
   reaching the parser, not actuating a relay.
+- **The device profile is derived but not finished.** An ADAM-6000 keeps its
+  identity off-chip and the vendor image does not carry it, which is why every
+  Modbus address is illegal. `peripheral_models/device_profile.py` reconstructs
+  the record from the firmware's own parser -- placement, XML vocabulary,
+  structure and the pin-list grammar are all read out of the code, and the
+  firmware accepts the result (" Copy OK", model name `ADAM6050`, pin list
+  `---------_ok `). But the channel counts still do not populate
+  (`ucTotal_StatusPins = 0`, `model (0)`) and with a profile present the boot
+  does not reach `IP ready.`, so it is **opt-in** (`HAL_ADAM_PROFILE=1`) and the
+  default remains the erased part, which boots and answers.
 - The web panel renders device state as JSON rather than a coil grid.
 
 ## Debugging aids
