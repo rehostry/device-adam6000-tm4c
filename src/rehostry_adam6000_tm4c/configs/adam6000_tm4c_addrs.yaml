@@ -4,6 +4,7 @@
 # vendor image, each pinned to its first instruction's bytes
 # by the extractor. Not from any build's symbol table.
 symbols:
+  25796: lwip_rx_walk
   27436: emac0_irq_handler
   31964: systick_handler
   61608: reset_handler
@@ -11,6 +12,7 @@ symbols:
   61630: hardfault_spin
   61632: default_handler_spin
   120242: lwip_trap_spin
+  282976: bss_copy_loop
   # --- synthetic: TivaWare ROM call landing pads ---
   16843008: rom_UARTCharPut   # APITABLE[1] entry 0
   16843028: rom_UARTConfigSetExpClk   # APITABLE[1] entry 5
@@ -29,3 +31,10 @@ symbols:
   16847124: rom_uDMAChannelEnable   # APITABLE[17] entry 5
   16847180: rom_uDMAIntStatus   # APITABLE[17] entry 19
   16847184: rom_uDMAIntClear   # APITABLE[17] entry 20
+  16853504: rom_EMACIntStatus   # APITABLE[42] entry 0
+  16853508: rom_EMACAddrGet   # APITABLE[42] entry 1
+  16853540: rom_EMACIntClear   # APITABLE[42] entry 9
+  16853564: rom_EMACPHYRead   # APITABLE[42] entry 15
+  16853568: rom_EMACPHYWrite   # APITABLE[42] entry 16
+  16853592: rom_EMACDescriptorListSetA   # APITABLE[42] entry 22
+  16853628: rom_EMACDescriptorListSetB   # APITABLE[42] entry 31

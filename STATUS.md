@@ -1,12 +1,114 @@
 <!-- Copyright 2026 Christopher Wright; SPDX-License-Identifier: AGPL-3.0-or-later -->
-# STATUS — device-adam6000-tm4c  (WIP: **M1**, not published)
+# STATUS — device-adam6000-tm4c  (**M4**)
 
-**Milestone reached: M1.** The vendor image boots, runs ARM Compiler's
-scatter-load/zero-init startup to completion (20,259 passes of the zero-init
-loop), and configures the clock tree — then takes an exception and spins in the
-shared default handler at `0x0000F0C0`.
+**Milestone reached: M4 — a Modbus/TCP round-trip.** The vendor image boots its
+own bootloader, loads and runs the application, reads its (blank) serial flash,
+saves configuration to internal flash, brings up lwIP, **transmits and receives
+Ethernet frames**, completes a TCP handshake on port 502, and **answers Modbus
+requests from its own Modbus server**:
 
-This is unfinished work, recorded so the next session does not repeat it.
+```
+>>> 000100000006 01 01 00000008     read coils 0..7
+<<< 000100000003 01 81 02           exception 2, illegal data address
+
+>>> 000100000006 01 41 00000001     function 0x41 -- not a Modbus function
+<<< 000100000003 01 c1 01           exception 1, illegal function
+```
+
+`src/rehostry_adam6000_tm4c/attack.py` boots one device per probe and checks
+18 assertions; all pass:
+
+```
+[PASS] answered / exception echoes the function / exception code 2   (fc 01,02,03,05)
+[PASS] answered / exception echoes the function / exception code 1   (fc 0x41)
+[PASS] a real parser: unsupported and unusable differ
+[PASS] every address is illegal, and the device says why
+[PASS] the stack is the firmware's own
+```
+
+**Why every answer is an exception, and why that is still evidence.** This
+module keeps its identity — model number, channel count, the whole I/O profile
+— in a serial NOR flash beside the microcontroller, and that flash is not part
+of the distributed firmware image. The device boots and says so:
+
+```
+ Boot_ SFinit() ff,ff,ff,ff,...
+[SIFlashRead_s] profile=ffffffff
+ Profi_XX: not found in flash
+ GetDevInfo() Err: ulLen=-1
+---------------g_sModelInfo.ucTotal_StatusPins = 0
+g_usModel = 255
+```
+
+A module with no I/O points has no legal data address, so every read is
+exception 2. Filling that flash with invented vendor data would produce
+prettier output and would be a fabrication.
+
+What makes it evidence anyway is the **discrimination**: a supported function
+code aimed at an unusable address is refused as *illegal data address* (2),
+while an unsupported function code is refused as *illegal function* (1), with
+the function byte echoed and the top bit set in both. Nothing that merely
+pretends to be a Modbus server tells those apart.
+
+## The boot, and the network coming up
+
+```
+QualComm Project Boot Code Start
+ BL: Advantech ADAM-6000D A1.03B10!! 0
+6000_DIO V6.15B23 start!!
+ ip=100000a, sm=ff, gw=0
+MACID:0.d0.c9.fe.ff.ff
+[lwIPInit] g_ui32IPMode = 0, g_ui32IPAddr=100000a, ...
+IP ready.
+```
+
+```
+EMAC TX #1: 42 bytes ffffffffffff000000000000080600010800060400010000000000000a000001
+             |          |                                              +-- 10.0.0.1
+             |          +-- ethertype 0x0806 = ARP, opcode 1 = request
+             +-- broadcast
+EMAC TX #3: ARP reply to the peer          <- the device answers what it receives
+EMAC RX #4: 66 bytes into 0x20011fbc       <- a Modbus request, into the ring
+```
+
+`ip=100000a` is 10.0.0.1, Advantech's factory default, and `00:D0:C9` is
+Advantech's real OUI — neither is written into the guest by the host.
+
+## The bug that cost the most: two vector tables
+
+The image carries **two** vector tables — the bootloader's at `0x00000000` and
+the application's at `0x00010000` — and the application relocates to its own by
+writing VTOR. The backend keeps its own copy of the vector base and only learns
+about it through `set_vtor()`, so a PPB model that merely stored the register
+left every interrupt dispatching through the *bootloader's* table.
+
+That failed in the worst possible way: **both** tables have a live entry for
+IRQ 40, so interrupts kept working and kept landing in the bootloader's
+Ethernet driver, whose `netif` the application never initialises. Its
+`netif->state` was still the `.data` image (`0xFFFFFFFF`), and the receive walk
+faulted:
+
+```
+64c8: ldr r0, [r0, #28]     ; netif->state  -> 0xFFFFFFFF
+64cc: ldr r5, [r0, #8]      ; [0xFFFFFFFF+8] wraps to 0x07 -- inside the vector table
+64e2: ldr r0, [r5, #0]      ; UC_ERR_READ_UNMAPPED at 0x00F0BD00
+```
+
+`0x00F0BD00` is the unaligned word at offset 7 of the table: the top byte of
+the reset vector followed by three bytes of the NMI vector. It reads exactly
+like a descriptor-layout bug in the Ethernet driver, and it is a driver that
+was never running. Four hypotheses were tested and disproved before a memory
+watchpoint and a pointer-chain probe found it.
+
+## Known limits
+
+- **One Modbus exchange per boot.** The device answers the first request after
+  boot and does not pick up later ones, on the same connection or a new one.
+  Reproduced at SysTick rates of 1500/2000/3000/4000 ROM calls per tick and
+  with up to 200 retransmissions, so it is not the clock and not frame loss.
+  `run_attack` works around it by booting one device per probe.
+- **No I/O points**, for the serial-flash reason above.
+- The web panel renders device state as JSON rather than a coil grid.
 
 ## What is established (and checked by `tools/extract_firmware.py`)
 

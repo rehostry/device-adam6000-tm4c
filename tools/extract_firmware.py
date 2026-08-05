@@ -57,6 +57,19 @@ EXPECT_SIZE = 430636
 
 EXPECT_INIT_SP = 0x2001C46C       # vector[0] -- inside the TM4C129x's 256 KB SRAM
 EXPECT_RESET = 0x0000F0A9         # vector[1] -- Reset_Handler | Thumb
+
+# THE IMAGE HAS TWO VECTOR TABLES. The bootloader's is at 0, the application's
+# at 0x00010000, and the application relocates to its own by writing VTOR. That
+# is not a detail: both tables have a live entry for IRQ 40, so dispatching
+# through the wrong one still "works" -- it just runs the bootloader's Ethernet
+# driver, whose interface struct the application never initialises, and the
+# first received frame faults in a way that looks like a descriptor bug. The
+# rehost forwards VTOR to the backend (peripheral_models/cortexm_ppb.py); this
+# is what pins the table it forwards to.
+APP_TABLE = 0x00010000
+EXPECT_APP_INIT_SP = 0x20028670
+EXPECT_APP_RESET = 0x000684CD
+EXPECT_APP_IRQ40 = 0x0001D5ED     # the application's EMAC0 handler | Thumb
 EXPECT_DEFAULT_HANDLER = 0x0000F0C1
 EXPECT_SYSTICK = 0x00007CDD       # vector[15] -- a real handler, not the default
 
@@ -89,6 +102,11 @@ RECOVERED_SYMBOLS = {
     # A second `b .`, in the middle of the lwIP init path. Nothing in the image
     # branches or points to it, so it is reached indirectly -- worth a probe.
     0x0001D5B2: ("lwip_trap_spin", bytes.fromhex("fee7")),
+    # The lwIP driver's receive walk. It faults two instructions in, on a ring
+    # manager pointer read out of a global -- so the probe reads that chain.
+    0x000064C4: ("lwip_rx_walk", bytes.fromhex("2de9f14f")),
+    # The word-copy loop that overwrites the lwIP interface struct with 0xFF.
+    0x00045160: ("bss_copy_loop", bytes.fromhex("50f8046b")),
 }
 
 # Size of the generated `bx lr` stub region. Must match the config's
@@ -134,6 +152,23 @@ ROM_STUBS = {
                                             # elapsed <= 500)`
     (17, 20): "rom_uDMAIntClear",           # called with the mask 0xC000,
                                             # i.e. channels 14 and 15
+    # APITABLE[42] is the EMAC table. The firmware drives the Ethernet MAC
+    # ENTIRELY through the ROM -- it never touches an EMAC register directly --
+    # so this table is the whole network seam.
+    (42, 0): "rom_EMACIntStatus",     # the EMAC ISR's first act: f(base, 1),
+                                      # and the result is passed straight to
+                                      # entry 9 to acknowledge it
+    (42, 9): "rom_EMACIntClear",      # f(base, status)
+    (42, 1): "rom_EMACAddrGet",       # f(base, 0, ptr) -- writes six bytes into
+                                      # a struct field, i.e. the MAC the driver
+                                      # then hands to lwIP
+    (42, 15): "rom_EMACPHYRead",       # f(base, 0, reg) for regs 1/10/17/18/19;
+                                       # reg 1 is BMSR and its result is masked
+                                       # with 0x20, the auto-negotiation-
+                                       # complete bit
+    (42, 16): "rom_EMACPHYWrite",      # f(base, 0, reg, value)
+    (42, 22): "rom_EMACDescriptorListSetA",  # f(base, ptr) in the init pair
+    (42, 31): "rom_EMACDescriptorListSetB",  # f(base, ptr), tail-called
     # APITABLE[13] is the SysCtl table.
     (13, 4): "rom_SysCtlPeripheralPresent",  # `if (f(EMAC0) == 0) b .`  -- the
                                              # firmware hangs forever if its
@@ -197,6 +232,21 @@ def run(a: argparse.Namespace) -> int:
                    f"0x{EXPECT_SYSTICK:08x}")
     print(f"  vector table OK: init_SP 0x{init_sp:08x} reset 0x{reset:08x} "
           f"systick 0x{systick:08x}")
+
+    app_sp, app_reset = struct.unpack_from("<II", raw, APP_TABLE)
+    app_irq40 = struct.unpack_from("<I", raw, APP_TABLE + (16 + 40) * 4)[0]
+    if (app_sp, app_reset, app_irq40) != (EXPECT_APP_INIT_SP,
+                                          EXPECT_APP_RESET,
+                                          EXPECT_APP_IRQ40):
+        raise Fail(
+            f"application vector table at 0x{APP_TABLE:08x} mismatch -- got "
+            f"SP 0x{app_sp:08x} reset 0x{app_reset:08x} irq40 "
+            f"0x{app_irq40:08x}, expected SP 0x{EXPECT_APP_INIT_SP:08x} reset "
+            f"0x{EXPECT_APP_RESET:08x} irq40 0x{EXPECT_APP_IRQ40:08x}.\n"
+            f"       Interrupts are dispatched through this table once the "
+            f"firmware writes VTOR; see PROVENANCE.md.")
+    print(f"  application vector table OK at 0x{APP_TABLE:08x}: init_SP "
+          f"0x{app_sp:08x} reset 0x{app_reset:08x} EMAC0 0x{app_irq40:08x}")
 
     # --- 3. the interrupt fingerprint -------------------------------------
     vec = struct.unpack_from(f"<{EXPECT_EXT_IRQS}I", raw, 64)

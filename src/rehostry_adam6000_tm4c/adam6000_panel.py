@@ -13,10 +13,11 @@ blank page remotely while it works on localhost (playbook trap 5). The page GETs
 
     rehostry-adam6000-tm4c-panel            # or: python3 -m rehostry_adam6000_tm4c.adam6000_panel
 
-TODO: render your device's real state (the register/coil map in device-plc's
+State comes from the firmware's own console (address, MAC, model, I/O-point
+count) and is rendered as JSON. A richer render -- the register/coil map in device-plc's
 panel is the model). Keep the polling transport and the boot/attack wiring.
 
-TODO: fill the on-page briefing block (the ``<details class="card brief">`` under
+The on-page briefing block (the ``<details class="card brief">`` under
 the ``<h1>``) with device-specific text -- Device / Steps / What you're seeing /
 The attack / Expect (playbook §2.5-5a). A first-time viewer must understand the
 device from the page alone.
@@ -95,7 +96,8 @@ def _shutdown_scenario():
     _on_stage("stopped", note="firmware stopped")
 
 
-# TODO: replace this page with a real render of your device's state. The
+# The STATE card renders whatever `attack.DeviceScenario.read_state` returns.
+# A device-specific render (a coil grid rather than JSON) would read better; the
 # transport (poll /state; POST /boot /refresh /attack /stop) must stay.
 PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
@@ -118,22 +120,35 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8>
  details.brief b{color:#cdd}
 </style></head><body><div class=wrap>
 <h1>adam6000-tm4c &mdash; rehosted firmware</h1>
-<!-- On-page briefing (playbook §2.5-5a). Fill every TODO with device-specific,
-     factual text so a first-time viewer understands it without the repo. -->
+<!-- On-page briefing (playbook §2.5-5a): device-specific, factual text so a
+     first-time viewer understands the page without the repo. -->
 <details class="card brief" open>
  <summary><b>About this panel</b> &mdash; what it is, what to do, what to expect</summary>
  <div class=body>
-  <p><b>Device.</b> TODO one line: the real hardware and what it does in the field
-     (e.g. "STM32L4 CAN node that broadcasts a torque setpoint every second").</p>
-  <p><b>Steps.</b> TODO the click order by button label:
-     1) <b>Boot firmware</b> &rarr; 2) <b>Re-read</b> to pull live state &rarr;
-     3) <b>Run attack</b> &rarr; 4) <b>Stop</b>.</p>
-  <p><b>What you're seeing.</b> TODO name each pane: the <b>STATE</b> card is the
-     firmware's own engine state (not host bookkeeping); the log shows boot/attack stages.</p>
-  <p><b>The attack.</b> TODO what the red <b>Run attack</b> button injects and why it
-     is a vulnerability (e.g. "an unauthenticated command the firmware accepts as trusted").</p>
-  <p><b>Expect.</b> TODO success = the exact verdict/state to watch change; a
-     non-landing or patched device would instead show &hellip;</p>
+  <p><b>Device.</b> An Advantech ADAM-6050 remote I/O module &mdash; a DIN-rail box with
+     12 digital inputs and 6 relay outputs, wired to plant equipment and driven over
+     Ethernet. This is its own firmware (6000_DIO V6.15B23) running its own bootloader,
+     its own lwIP stack and its own Modbus/TCP server on port 502.</p>
+  <p><b>Steps.</b> 1) <b>Boot firmware</b> &mdash; about a minute, and it ends when the
+     firmware prints <i>IP ready.</i> &rarr; 2) <b>Re-read</b> to pull what the device says
+     about itself &rarr; 3) <b>Run attack</b> &rarr; 4) <b>Stop</b>.</p>
+  <p><b>What you&rsquo;re seeing.</b> The <b>STATE</b> card is read from the firmware&rsquo;s
+     own console, not from host bookkeeping: the address it chose (10.0.0.1, Advantech&rsquo;s
+     factory default), its MAC (00:D0:C9, Advantech&rsquo;s real OUI), its model number and
+     its I/O-point count. The log shows boot and attack stages.</p>
+  <p><b>The attack.</b> <b>Run attack</b> opens a TCP connection to port 502 and sends one
+     Modbus request &mdash; no credential, no session, no key. Modbus/TCP has no
+     authentication at all, so on the real module the same five bytes that read an input can
+     close a relay contact. That is the finding: a device sold to sit on a plant network and
+     drive equipment answers anyone who can reach its socket.</p>
+  <p><b>Expect.</b> Success is the device <i>answering</i> &mdash; a Modbus exception frame
+     with the function byte echoed and its top bit set. Every address is illegal here
+     (exception <b>2</b>) because this module keeps its I/O profile in a serial flash the
+     vendor image does not contain, so it boots reporting <i>GetDevInfo() Err</i>,
+     <i>g_usModel = 255</i> and zero I/O points. An unsupported function code comes back as
+     exception <b>1</b> instead &mdash; that difference is the proof the vendor&rsquo;s own
+     parser is running and not a stand-in. A device that never came up would show no answer
+     at all.</p>
  </div>
 </details>
 <div class=card>

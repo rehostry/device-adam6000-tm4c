@@ -1,0 +1,12 @@
+# Copyright 2026 Christopher Wright
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Host-bridge overlay: exposes the device's Modbus/TCP server on tcp/21060,
+# carried to it over the modelled Ethernet (ARP -> IPv4 -> TCP -> EMAC DMA).
+#
+# Layered ON TOP of adam6000_tm4c_config.yaml -- intercepts APPEND across config
+# files, they do not override (playbook §2.4), so `rom_SysCtlPeripheralReady`
+# ends up with both the ROM handler and this one, and both run.
+intercepts:
+  - class: rehostry_adam6000_tm4c.bp_handlers.modbus_bridge.ModbusBridge
+    function: rom_SysCtlPeripheralReady

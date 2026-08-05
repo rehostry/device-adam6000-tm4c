@@ -94,6 +94,10 @@ intercepts:
     function: default_handler_spin
   - class: rehostry_adam6000_tm4c.bp_handlers.fault_probe.FaultProbe
     function: lwip_trap_spin
+  - class: rehostry_adam6000_tm4c.bp_handlers.fault_probe.FaultProbe
+    function: lwip_rx_walk
+  - class: rehostry_adam6000_tm4c.bp_handlers.fault_probe.FaultProbe
+    function: bss_copy_loop
 
   # TivaWare ROM entry points. These addresses are OURS -- tiva_rom.py hands
   # them to the firmware when it answers the ROM API table -- so they are
@@ -132,3 +136,17 @@ intercepts:
     function: rom_uDMAChannelEnable
   - class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi
     function: rom_uDMAIntClear
+  - class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi
+    function: rom_EMACPHYRead
+  - class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi
+    function: rom_EMACAddrGet
+  - class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi
+    function: rom_EMACIntStatus
+  - class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi
+    function: rom_EMACIntClear
+  - class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi
+    function: rom_EMACPHYWrite
+  - class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi
+    function: rom_EMACDescriptorListSetA
+  - class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi
+    function: rom_EMACDescriptorListSetB

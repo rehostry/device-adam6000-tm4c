@@ -28,6 +28,17 @@ external interrupt in the whole vector table. So this register *is* the
 firmware's deferred-work mechanism, and a model that swallows it silently
 removes the device's only interrupt.
 
+**VTOR IS NOT A REGISTER YOU CAN JUST STORE.** This image contains *two*
+vector tables -- the bootloader's at 0x00000000 and the application's at
+0x00010000 -- and the application relocates to its own by writing VTOR. The
+backend keeps its own copy of the vector base and only learns about it through
+`set_vtor()`, so a model that merely remembers the value in a dict leaves every
+interrupt dispatching through the bootloader's table. That is not a subtle
+error: both tables have a live entry for IRQ 40, so interrupts kept working and
+kept landing in the *bootloader's* Ethernet driver, whose interface struct the
+application never initialises. It reads as a descriptor-layout bug in a driver
+that was never running. See `hw_write` below.
+
 The trigger is **queued, not injected**: appending to the backend's own pending
 list is safe from an MMIO callback, synthesising an exception entry there is
 not (playbook §2.7a).
@@ -85,6 +96,10 @@ class CortexMPpb(SocCatchAll):
         self.stir_writes = 0
         self.systick_ticks = 0
         self._backend: Optional[Any] = None
+        # Remembered because the firmware may relocate the table before the
+        # backend has been handed to this model.
+        self.vtor = 0
+        self._ipsr_reg: Optional[int] = None
         global _PPB
         _PPB = self
 
@@ -92,6 +107,18 @@ class CortexMPpb(SocCatchAll):
     def set_backend(self, backend: Any) -> None:
         """Handed the emulator by the first ROM call, from breakpoint context."""
         self._backend = backend
+        if self.vtor:
+            self._apply_vtor()
+
+    def _apply_vtor(self) -> None:
+        """Tell the backend where the vector table actually is."""
+        setter = getattr(self._backend, "set_vtor", None)
+        if setter is None:
+            return
+        setter(self.vtor)
+        log.info("VTOR: vector table relocated to 0x%08x -- interrupts now "
+                 "dispatch through the application's table, not the "
+                 "bootloader's", self.vtor)
 
     def armed(self) -> List[int]:
         return sorted(self.enabled_irqs)
@@ -107,10 +134,35 @@ class CortexMPpb(SocCatchAll):
         two interrupts (playbook §2.98).
         """
         queue = getattr(self._backend, "_pending_irqs", None)
-        if queue is None or queue:
+        if queue is None or queue or self.in_handler_mode():
             return
         queue.append(irq)
         self.triggers += 1
+
+    def in_handler_mode(self) -> bool:
+        """True while the CPU is inside an exception handler (IPSR != 0).
+
+        NOT QUEUING WHILE ONE IS ACTIVE is the same rule as playbook §2.98, and
+        it matters here for a second reason: this firmware's Ethernet ISR is
+        re-entrant only by accident. Delivering IRQ 40 while it is already
+        running walks its private state a second time, mid-update, and faults on
+        a pointer read that looks like a descriptor-layout bug and is not.
+        Equal-priority interrupts do not pre-empt each other on a Cortex-M
+        anyway, so declining here is also what the hardware does.
+        """
+        uc = getattr(self._backend, "_uc", None)
+        if uc is None:
+            return False
+        if self._ipsr_reg is None:
+            try:
+                from unicorn import arm_const
+                self._ipsr_reg = arm_const.UC_ARM_REG_IPSR
+            except Exception:                    # noqa: BLE001
+                return False
+        try:
+            return (uc.reg_read(self._ipsr_reg) & 0x1FF) != 0
+        except Exception:                        # noqa: BLE001
+            return False
 
     # -- registers ---------------------------------------------------------
     def hw_read(self, offset: int, size: int, pc: int = 0xBAADBAAD,
@@ -131,6 +183,8 @@ class CortexMPpb(SocCatchAll):
             return cur
         if addr == STIR:
             return 0                      # write-only on real silicon
+        if addr == VTOR:
+            return self.vtor
         # Zero, NOT the busy-wait breaker's escalating value -- see the module
         # docstring. Nothing on the PPB is a status bit worth guessing at.
         return self.words.get(addr, 0)
@@ -164,6 +218,14 @@ class CortexMPpb(SocCatchAll):
             for bit in range(32):
                 if (value >> bit) & 1:
                     self.enabled_irqs.discard(word * 32 + bit)
+            return True
+        if addr == VTOR:
+            # The application's own table. Storing this without telling the
+            # backend is the whole bug described in the module docstring.
+            self.vtor = value & 0xFFFFFF80
+            self.words[addr] = value
+            if self._backend is not None:
+                self._apply_vtor()
             return True
         if addr == SYST_CSR and value & 1:
             if not self.words.get(SYST_CSR, 0) & 1:

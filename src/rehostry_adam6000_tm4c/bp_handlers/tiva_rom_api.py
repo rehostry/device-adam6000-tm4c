@@ -30,6 +30,7 @@ from halucinator.bp_handlers.bp_handler import BPHandler, bp_handler
 
 from ..peripheral_models.cortexm_ppb import get_ppb
 from ..peripheral_models.tiva_apb import get_apb
+from ..peripheral_models.tiva_emac import EMAC_IRQ
 from ..peripheral_models.spi_flash import get_flash
 from ..peripheral_models.tiva_udma import get_udma
 from ..peripheral_models.tiva_console import get_console
@@ -56,6 +57,33 @@ class TivaRomApi(BPHandler):
         self.ticks = 0
         self._tick_calls = 0
         self._tick_every = int(os.environ.get("HAL_ADAM_TICK_EVERY", "4000"), 0)
+        # The frame path runs far more often than the clock: it is what makes
+        # the device answer, and it costs a ring scan.
+        self._net_every = int(os.environ.get("HAL_ADAM_NET_EVERY", "64"), 0)
+        self._samples = 0
+        self._sample_calls = 0
+
+    def _sample_state(self, qemu: Any) -> None:
+        """Watch one word settle, to tell "never set" from "not set yet".
+
+        A field that is wrong at the moment of use tells you nothing about
+        whether the firmware would have set it later. Sampling it over time
+        does, and it is the difference between a missing initialisation and a
+        frame delivered before the driver exists (playbook §2.125).
+        """
+        spec = os.environ.get("HAL_ADAM_SAMPLE_STATE")
+        if not spec or self._samples >= 40:
+            return
+        self._sample_calls += 1
+        if self._sample_calls % 200:
+            return
+        self._samples += 1
+        try:
+            addr = int(spec, 0)
+            log.error("SAMPLE %d (tick %d): [0x%08x] = 0x%08x", self._samples,
+                      self.ticks, addr, qemu.read_memory(addr, 4, 1))
+        except Exception as exc:                 # noqa: BLE001
+            log.error("SAMPLE failed: %s", exc)
 
     def _tick(self, qemu: Any) -> None:
         """Advance SysTick, from breakpoint context, once the firmware wants it.
@@ -88,8 +116,35 @@ class TivaRomApi(BPHandler):
         safe place to inject.
         """
         self._tick_calls += 1
+        self._sample_state(qemu)
         if self._tick_calls % 512 == 0:
             get_console().flush_idle()
+
+        # THE NETWORK IS NOT GATED ON THE CLOCK. Moving frames between the DMA
+        # rings and the peer has nothing to do with SysTick being enabled or an
+        # interrupt being outstanding, and putting it behind those two checks
+        # throttled it to almost nothing: one frame delivered in a hundred
+        # seconds, so the peer's ARP request went in and its SYN never did.
+        apb = get_apb()
+        if apb is not None and self._tick_calls % self._net_every == 0:
+            apb.emac.poll()
+            from ..peripheral_models.net_peer import get_peer
+            get_peer().on_poll()
+            # The relay has to run on the device's own pump too: hanging it off
+            # a boot-time ROM call means the device's answer is produced and
+            # then never handed to the host.
+            from .modbus_bridge import get_bridge
+            bridge = get_bridge()
+            if bridge is not None:
+                bridge.pump()
+
+        # ONE RATE, START TO FINISH. Speeding the clock up once the stack was
+        # live looked obviously right -- the boot-ordering constraint above is
+        # about initialisation, and a slow clock starves the servers afterwards
+        # -- and it was wrong: at one tick per 400 ROM calls the device stopped
+        # answering the peer's SYN altogether and never left SYN_SENT. The
+        # firmware keeps deriving timing from this clock long after "IP ready.",
+        # so the rate is a property of the whole run, not of the boot.
         if self._tick_calls % self._tick_every:
             return
         from ..peripheral_models.cortexm_ppb import SYST_CSR, get_ppb
@@ -98,6 +153,17 @@ class TivaRomApi(BPHandler):
             return                              # SysTick is not enabled yet
         if getattr(qemu, "_pending_irqs", None):
             return                              # one delivery outstanding
+        if apb is not None:
+            ppb = get_ppb()
+            if apb.emac.rx_irq_pending and not (ppb and ppb.in_handler_mode()):
+                # A frame just landed: the MAC's own interrupt outranks the
+                # clock this pass. One exception per delivery (playbook §2.98).
+                apb.emac.rx_irq_pending = False
+                try:
+                    qemu.inject_irq(EMAC_IRQ)
+                except Exception:                # noqa: BLE001
+                    pass
+                return
         try:
             qemu.inject_irq(-1)                 # vtor + (16 + -1)*4 = SysTick
         except Exception:                        # noqa: BLE001
@@ -113,6 +179,8 @@ class TivaRomApi(BPHandler):
         """
         if self._wired:
             return
+        from .fault_probe import install_watchpoint
+        install_watchpoint(qemu)
         ppb = get_ppb()
         if ppb is not None:
             ppb.set_backend(qemu)
@@ -276,6 +344,97 @@ class TivaRomApi(BPHandler):
         udma = get_udma()
         udma.run(qemu)
         return True, udma.complete
+
+    # -- the Ethernet MAC --------------------------------------------------
+    @bp_handler(["rom_EMACPHYRead"])
+    def emac_phy_read(self, qemu: Any, bp_addr: int) -> Tuple[bool, Optional[int]]:
+        """`EMACPHYRead(base, phyAddr, regAddr)` -- the link-status gate.
+
+        The firmware masks register 1's result with 0x20 (auto-negotiation
+        complete) before it will use the network. A zero here leaves the stack
+        initialised, printing "IP ready.", and permanently silent.
+        """
+        self._wire(qemu)
+        try:
+            reg = qemu.read_register("r2") & 0x1F
+        except Exception:                        # noqa: BLE001
+            return True, 0
+        apb = get_apb()
+        if apb is None:
+            return True, 0
+        return True, apb.emac.phy_read(reg)
+
+    @bp_handler(["rom_EMACIntStatus"])
+    def emac_int_status(self, qemu: Any,
+                        bp_addr: int) -> Tuple[bool, Optional[int]]:
+        """`EMACIntStatus(base, bMasked)` -- why the MAC interrupted.
+
+        This is the first thing the Ethernet ISR does, and everything it goes on
+        to do is gated on the answer. A stub returning zero gives a handler that
+        runs on every interrupt, concludes the MAC has nothing to say, and
+        returns -- so frames sit in the receive ring, delivered and never
+        collected, and the device looks like it is ignoring the network.
+        """
+        apb = get_apb()
+        return True, apb.emac.int_status if apb is not None else 0
+
+    @bp_handler(["rom_EMACIntClear"])
+    def emac_int_clear(self, qemu: Any,
+                       bp_addr: int) -> Tuple[bool, Optional[int]]:
+        apb = get_apb()
+        if apb is not None:
+            try:
+                apb.emac.int_status &= ~qemu.read_register("r1") & 0xFFFFFFFF
+            except Exception:                    # noqa: BLE001
+                pass
+        return True, 0
+
+    @bp_handler(["rom_EMACAddrGet"])
+    def emac_addr_get(self, qemu: Any, bp_addr: int) -> Tuple[bool, Optional[int]]:
+        """`EMACAddrGet(base, index, pui8MACAddr)` -- the driver asks the MAC
+        for its own address and hands the answer to lwIP. A stub that writes
+        nothing leaves lwIP with whatever was in that struct field."""
+        apb = get_apb()
+        if apb is None:
+            return True, 0
+        try:
+            ptr = qemu.read_register("r2")
+            qemu.write_memory(ptr, 1, apb.emac.mac, len(apb.emac.mac))
+        except Exception:                        # noqa: BLE001
+            pass
+        return True, 0
+
+    @bp_handler(["rom_EMACPHYWrite"])
+    def emac_phy_write(self, qemu: Any,
+                       bp_addr: int) -> Tuple[bool, Optional[int]]:
+        try:
+            reg = qemu.read_register("r2") & 0x1F
+            val = qemu.read_register("r3")
+        except Exception:                        # noqa: BLE001
+            return True, 0
+        apb = get_apb()
+        if apb is not None:
+            apb.emac.phy_write(reg, val)
+        return True, 0
+
+    @bp_handler(["rom_EMACDescriptorListSetA", "rom_EMACDescriptorListSetB"])
+    def emac_descriptor_list_set(self, qemu: Any,
+                                 bp_addr: int) -> Tuple[bool, Optional[int]]:
+        """`EMAC{Tx,Rx}DMADescriptorListSet(base, pDescriptor)`.
+
+        Both entries are handled together: which of the two is transmit is not
+        stated anywhere in a stripped image, so the pointers are recorded and
+        the rings inspected rather than guessed at.
+        """
+        self._wire(qemu)
+        try:
+            ptr = qemu.read_register("r1")
+        except Exception:                        # noqa: BLE001
+            return True, 0
+        apb = get_apb()
+        if apb is not None:
+            apb.emac.register_list(ptr)
+        return True, 0
 
     # -- configuration calls that are correctly no-ops ---------------------
     # Named so the trace says "this was deliberate", not "this was missed".
