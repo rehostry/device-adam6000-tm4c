@@ -73,6 +73,15 @@ peripherals:
     emulate: rehostry_adam6000_tm4c.peripheral_models.tiva_apb.TivaApb
     permissions: rw-
     size: 0x00100000
+  # The peripheral bit-band alias. Every word here is one bit of the 0x40000000
+  # window; the firmware reaches its I/O pins through it once it has a device
+  # profile telling it that it has any. See peripheral_models/cortexm_bitband.py.
+  bitband:
+    base_addr: 0x42000000
+    emulate: rehostry_adam6000_tm4c.peripheral_models.cortexm_bitband.CortexMBitBand
+    permissions: rw-
+    size: 0x02000000
+
   # AES/DES/SHA accelerators (TM4C129x puts them well above the APB window).
   crypto:
     base_addr: 0x44000000

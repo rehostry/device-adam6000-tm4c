@@ -75,12 +75,24 @@ def profile_xml() -> bytes:
         kind-3 callback receives an element name and its character data, and
         the model name is built as the literal "ADAM" followed by `id`, which
         is why an unprovisioned module calls itself ADAM6000;
+      * each `DIO` block carries a `type` of **"DI"** or **"DO"** -- the apply
+        step at 0x00045930 selects on it, and only the second path writes
+        `ucTotal_StatusPins`, so a profile without it parses cleanly and
+        populates nothing;
       * `statusPin` / `pins` / `ledpins` take pin lists in the grammar above;
       * `EtherIC` accepts a single character and sets a flag bit when it is
         '1'; `HWver` and `id` are limited to eight characters.
 
-    Verified by the firmware's own acceptance: it prints " Copy OK", reports
-    the model name as ADAM6050, and prints "---------_ok " after the pin list.
+    Verified by the firmware's own acceptance. With this record it prints
+    " Copy OK >> model (0), bDO_OCP=1", resolves `g_usModel` to 0 (the index of
+    "6050" in its own table of 6050/6051/6052/6060/6066) and enumerates its
+    channels::
+
+        @0x20015e40 [ADAM6050]:  HvA1.0
+          I[12] 1: 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 1.0 1.1 1.2 1.3
+          O[6]  0: 2.0 2.1 2.2 2.3 2.4 2.5
+
+    which is an ADAM-6050: twelve digital inputs and six digital outputs.
     """
     override = os.environ.get("HAL_ADAM_PROFILE_XML")
     if override:
@@ -89,11 +101,14 @@ def profile_xml() -> bytes:
         '<ADAM>'
         f'<module><id>{MODEL}</id><HWver>{HW_VERSION}</HWver>'
         '<EtherIC>1</EtherIC></module>'
-        f'<DIO><total>{TOTAL_PINS}</total>'
-        f'<pins>{pin_list(DO_PINS)}</pins>'
+        f'<DIO><type>DI</type><total>{DI_CHANNELS}</total>'
+        f'<pins>{pin_list(DI_PINS)}</pins>'
         f'<statusPin>{pin_list(DI_PINS)}</statusPin>'
-        f'<statusTotal>{DI_CHANNELS}</statusTotal>'
-        '</DIO>'
+        f'<statusTotal>{DI_CHANNELS}</statusTotal></DIO>'
+        f'<DIO><type>DO</type><total>{DO_CHANNELS}</total>'
+        f'<pins>{pin_list(DO_PINS)}</pins>'
+        f'<statusPin>{pin_list(DO_PINS)}</statusPin>'
+        f'<statusTotal>{DO_CHANNELS}</statusTotal></DIO>'
         '</ADAM>'
     ).encode()
 

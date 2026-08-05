@@ -103,16 +103,27 @@ the raw exchange. All 18 checks pass on a working tree:
   reached, so nothing here demonstrates driving an output. The
   no-authentication property of Modbus/TCP is real, but this rehost shows
   reaching the parser, not actuating a relay.
-- **The device profile is derived but not finished.** An ADAM-6000 keeps its
-  identity off-chip and the vendor image does not carry it, which is why every
-  Modbus address is illegal. `peripheral_models/device_profile.py` reconstructs
-  the record from the firmware's own parser -- placement, XML vocabulary,
-  structure and the pin-list grammar are all read out of the code, and the
-  firmware accepts the result (" Copy OK", model name `ADAM6050`, pin list
-  `---------_ok `). But the channel counts still do not populate
-  (`ucTotal_StatusPins = 0`, `model (0)`) and with a profile present the boot
-  does not reach `IP ready.`, so it is **opt-in** (`HAL_ADAM_PROFILE=1`) and the
-  default remains the erased part, which boots and answers.
+- **The device profile is derived, and populates the module -- but the boot
+  does not finish.** An ADAM-6000 keeps its identity off-chip and the vendor
+  image does not carry it, which is why every Modbus address is illegal.
+  `peripheral_models/device_profile.py` reconstructs the record from the
+  firmware's own parser -- placement, XML vocabulary, structure, the `DI`/`DO`
+  block types and the pin-list grammar are all read out of the code. With it
+  the firmware accepts the profile and describes itself correctly:
+
+  ```
+   Copy OK >> model (0), bDO_OCP=1
+  ---------------g_sModelInfo.ucTotal_StatusPins = 6
+  @0x20015e40 [ADAM6050]:  HvA1.0
+    I[12] 1: 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 1.0 1.1 1.2 1.3
+    O[6]  0: 2.0 2.1 2.2 2.3 2.4 2.5
+  ```
+
+  Twelve inputs, six outputs, model index 0 of its own 6050/6051/6052/6060/6066
+  table. But the boot then stops at `sntp sync : 255` and never reaches
+  `IP ready.`, so there is no Modbus at all on this path. It is therefore
+  **opt-in** (`HAL_ADAM_PROFILE=1`); the default remains the erased part, which
+  boots and answers.
 - The web panel renders device state as JSON rather than a coil grid.
 
 ## Debugging aids

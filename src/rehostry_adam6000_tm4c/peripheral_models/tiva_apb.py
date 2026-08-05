@@ -23,6 +23,7 @@ from halucinator import hal_log
 from .soc_catchall import SocCatchAll
 from .tiva_emac import TivaEmac
 from .tiva_flashctrl import TivaFlashCtrl
+from .tiva_hib import TivaHib
 
 log = hal_log.getHalLogger()
 
@@ -32,6 +33,7 @@ PAGE = 0x1000
 # page index -> (attribute, class, label)
 LAYOUT = [
     (0xEC, "emac", TivaEmac, "EMAC0 (Ethernet)"),
+    (0xFC, "hib", TivaHib, "Hibernation module (RTC + retained RAM)"),
     (0xFD, "flashctrl", TivaFlashCtrl, "FLASH controller"),
 ]
 
