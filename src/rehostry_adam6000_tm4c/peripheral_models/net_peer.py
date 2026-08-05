@@ -94,6 +94,8 @@ class NetPeer:
         self.syn_retransmits = 0
         self.segments_in = 0
         self.segments_out = 0
+        self.retry_connect = False
+        self.retry_polls = 0
         self.rto_polls = int(os.environ.get("HAL_ADAM_RTO_POLLS", "400"), 0)
         # GENEROUS ON PURPOSE. Right after boot this device copies its whole
         # firmware image to the serial flash ("Backup_FW_Image success"), and
@@ -260,6 +262,12 @@ class NetPeer:
         # is still copying its firmware image to serial flash, is a connection
         # that never opens -- and the failure looks identical to a device with
         # no server listening.
+        if self.state == "CLOSED" and self.retry_connect:
+            self.retry_polls += 1
+            if self.retry_polls >= self.rto_polls * 4:
+                self.retry_polls = 0
+                self.connect(self.remote_port, self.local_port + 1)
+            return
         if self.state == "SYN_SENT":
             self.syn_rto += 1
             if self.syn_rto >= self.rto_polls:
@@ -325,7 +333,14 @@ class NetPeer:
             return
 
         if flags & TCP_RST:
+            # NOT FATAL. A reset means nothing is listening *yet*: the bridge
+            # opens its connection as soon as the device has an address, and on
+            # a slow boot the Modbus server binds well after that.
             self.state = "CLOSED"
+            self.retry_connect = True
+            self.retry_polls = 0
+            log.info("PEER: reset by the device -- nothing listening on %d "
+                     "yet, will retry", self.remote_port)
             return
         ack = int.from_bytes(seg[8:12], "big")
         if self.unacked and \

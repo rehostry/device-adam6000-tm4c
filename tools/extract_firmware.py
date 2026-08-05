@@ -107,6 +107,10 @@ RECOVERED_SYMBOLS = {
     0x000064C4: ("lwip_rx_walk", bytes.fromhex("2de9f14f")),
     # The word-copy loop that overwrites the lwIP interface struct with 0xFF.
     0x00045160: ("bss_copy_loop", bytes.fromhex("50f8046b")),
+    # The inner call of the firmware's millisecond delay loop (0x0001E898).
+    # The loop spins on a SysTick-driven counter and makes no ROM calls, so a
+    # clock paced off ROM calls never advances and the delay never expires.
+    0x00032568: ("hal_delay_yield", bytes.fromhex("15f0c4bf")),
 }
 
 # Size of the generated `bx lr` stub region. Must match the config's

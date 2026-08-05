@@ -189,6 +189,34 @@ class TivaRomApi(BPHandler):
         if apb is not None:
             apb.set_backend(qemu)
 
+    @bp_handler(["hal_delay_yield"])
+    def delay_yield(self, qemu: Any,
+                    bp_addr: int) -> Tuple[bool, Optional[int]]:
+        """Advance the clock from inside the firmware's own delay loop.
+
+        SysTick here is paced off ROM calls (see `_tick`), which works only
+        while the firmware is making them. Its millisecond delay
+        (`while (ticks - start < n) yield();` at 0x0001E898) makes none at all,
+        so the counter it is waiting on never moves and the delay never
+        expires. This is the same class of problem as the boot-ordering one
+        above and has the same shape of answer: tick where the firmware is
+        actually waiting, rather than speeding up the clock everywhere.
+
+        SCOPED TO THE PROVISIONED PATH, because it is not free. Ticking here
+        changes the clock's phase everywhere, and on the unprovisioned build --
+        which never reaches this delay -- it made the Modbus round-trip flaky:
+        one run passed all 18 checks and the next failed three. The delay loop
+        only stalls once the module believes it has I/O, so that is where the
+        extra ticking belongs.
+
+        Passive -- the yield still runs.
+        """
+        from ..peripheral_models import device_profile
+        if not device_profile.provisioned():
+            return False, None
+        self._tick(qemu)
+        return False, None
+
     # -- the console -------------------------------------------------------
     @bp_handler(["rom_UARTCharPut"])
     def uart_char_put(self, qemu: Any,

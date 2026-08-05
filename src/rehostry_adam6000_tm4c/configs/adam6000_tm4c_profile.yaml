@@ -1,0 +1,20 @@
+# Copyright 2026 Christopher Wright
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# EXTRA CONFIG FOR THE PROVISIONED PATH (HAL_ADAM_PROFILE=1). Add it with a
+# further `-c adam6000_tm4c_profile.yaml`.
+#
+# Once the module believes it has I/O it runs a millisecond delay loop
+# (0x0001E898) that spins on a SysTick-driven counter and makes no ROM calls,
+# so a clock paced off ROM calls never advances and the boot never reaches
+# lwIP. Ticking from the loop's own yield fixes that.
+#
+# IT IS NOT IN THE MAIN CONFIG ON PURPOSE. A breakpoint on a function this hot
+# is registered on every path, and its handler runs whether or not the path
+# needs it, so it perturbs the timing of a device whose Modbus round-trip is
+# already timing-sensitive. Keeping it opt-in costs nothing and removes the
+# question. (A measurement that appeared to show it halving the pass rate was
+# confounded by machine load and should not be quoted.)
+intercepts:
+  - class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi
+    function: hal_delay_yield

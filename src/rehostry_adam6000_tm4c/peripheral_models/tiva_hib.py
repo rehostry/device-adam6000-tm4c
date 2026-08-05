@@ -33,6 +33,21 @@ HIB_RTCC = 0x000
 HIB_CTL = 0x010
 HIB_WRC = 1 << 31
 
+# TM4C129x calendar mode. The firmware spins on bit 31 (VALID) of both calendar
+# words before it will read either -- `ldr r3,[r1,#20]; cmp r3,#0; bpl .` at
+# 0x00046B02 -- and then demands that HIBCAL1 read the same twice, so the date
+# must not move underneath it. Without VALID the provisioned boot never reaches
+# lwIP; the only symptom is a device that stops printing after "sntp sync".
+HIB_CALCTL = 0x300
+HIB_CAL0 = 0x310          # VALID | HR<<16 | MIN<<8 | SEC
+HIB_CAL1 = 0x314          # VALID | DOW<<24 | YEAR<<16 | MON<<8 | DOM
+HIB_VALID = 1 << 31
+
+# A FIXED DATE, deliberately. There is no battery and no host clock behind this
+# model, and a rehost that quietly picks up the wall clock makes runs that
+# cannot be compared with each other. 2026-01-01 is arbitrary and stable.
+CAL_YEAR, CAL_MONTH, CAL_DAY, CAL_DOW = 26, 1, 1, 4
+
 
 class TivaHib(SocCatchAll):
     """RTC counter, a ready write-complete bit, and retained RAM."""
@@ -50,6 +65,13 @@ class TivaHib(SocCatchAll):
         if offset == HIB_CTL:
             # Always ready: there is no 32 kHz domain to synchronise with.
             return self.words.get(offset, 0) | HIB_WRC
+        if offset == HIB_CAL1:
+            return (HIB_VALID | (CAL_DOW << 24) | (CAL_YEAR << 16)
+                    | (CAL_MONTH << 8) | CAL_DAY)
+        if offset == HIB_CAL0:
+            secs = self.seconds
+            return (HIB_VALID | (((secs // 3600) % 24) << 16)
+                    | (((secs // 60) % 60) << 8) | (secs % 60))
         if offset == HIB_RTCC:
             # A seconds counter that advances, so a firmware that waits for it
             # to move is not waiting forever.

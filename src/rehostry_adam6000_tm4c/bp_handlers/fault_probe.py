@@ -26,6 +26,37 @@ log = hal_log.getHalLogger()
 _WATCH_INSTALLED = False
 
 
+_PC_TRACE = False
+
+
+def _install_pc_trace(uc: Any) -> None:
+    """Log the address of every Nth basic block (HAL_ADAM_PCTRACE=N).
+
+    A firmware that stops printing has either faulted or started looping, and
+    the two look identical from outside. Block-level sampling is cheap enough to
+    leave running and names the loop directly, where instruction-level tracing
+    would not finish.
+    """
+    global _PC_TRACE
+    every = int(os.environ.get("HAL_ADAM_PCTRACE", "0"), 0)
+    if not every or _PC_TRACE or uc is None:
+        return
+    try:
+        from unicorn import UC_HOOK_BLOCK
+        state = {"n": 0}
+
+        def _on_block(uc_, address, size, _ud):     # noqa: ANN001
+            state["n"] += 1
+            if state["n"] % every == 0:
+                log.error("PCTRACE %d: block at 0x%08x", state["n"], address)
+
+        uc.hook_add(UC_HOOK_BLOCK, _on_block)
+        _PC_TRACE = True
+        log.error("PCTRACE: sampling every %d blocks", every)
+    except Exception as exc:                     # noqa: BLE001
+        log.error("PCTRACE: could not install: %s", exc)
+
+
 def install_watchpoint(qemu: Any) -> None:
     """Log every write into ``HAL_ADAM_WATCH`` ("<addr>:<len>"), with the PC.
 
@@ -39,10 +70,11 @@ def install_watchpoint(qemu: Any) -> None:
     Python call per store.
     """
     global _WATCH_INSTALLED
+    uc = getattr(qemu, "_uc", None)
+    _install_pc_trace(uc)
     spec = os.environ.get("HAL_ADAM_WATCH")
     if not spec or _WATCH_INSTALLED:
         return
-    uc = getattr(qemu, "_uc", None)
     if uc is None:
         return
     addr_s, _, len_s = spec.partition(":")
