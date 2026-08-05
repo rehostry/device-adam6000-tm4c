@@ -48,11 +48,20 @@ def spawn_argv(python: Optional[str] = None, emulator: str = "unicorn",
     """argv for ``python -m halucinator.main`` with this device's configs.
 
     Config files are passed by basename and resolved against :func:`spawn_cwd`.
-    With ``bridge=True`` the host-bridge overlay is appended.
+    With ``bridge=True`` the host-bridge overlay is appended. The provisioned
+    overlay is appended whenever a device profile is in play, so every entry
+    point gets it -- forgetting it is silent: the boot simply stops inside a
+    delay loop before lwIP finishes.
     """
+    from .peripheral_models import device_profile
     argv = [python or os.environ.get("HAL_PY") or sys.executable,
             "-m", "halucinator.main"]
-    for f in (paths.CONFIG_FILES + ([paths.BRIDGE_CONFIG] if bridge else [])):
+    extra = []
+    if device_profile.provisioned():
+        extra.append(paths.PROFILE_CONFIG)
+    if bridge:
+        extra.append(paths.BRIDGE_CONFIG)
+    for f in (paths.CONFIG_FILES + extra):
         argv += ["-c", f]
     argv += ["--emulator", emulator]
     if rx_port is None:

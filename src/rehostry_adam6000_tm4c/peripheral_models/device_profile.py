@@ -41,7 +41,13 @@ MODEL = int(os.environ.get("HAL_ADAM_MODEL", "6050"), 0)
 DI_CHANNELS = int(os.environ.get("HAL_ADAM_DI", "12"), 0)
 DO_CHANNELS = int(os.environ.get("HAL_ADAM_DO", "6"), 0)
 TOTAL_PINS = DI_CHANNELS + DO_CHANNELS
-HW_VERSION = os.environ.get("HAL_ADAM_HWVER", "A1.0")
+# NOT COSMETIC. The hardware version selects the stride of the pin arrays:
+# 0x0002A33A memcmps it against "A1000" (stride 2) and then "A2000" (stride 1),
+# and if it matches neither the stride stays **zero** -- so the loop that walks
+# the channels at 0x0002A370 advances by nothing and never terminates. A
+# plausible-looking "A1.0" hangs the boot after lwIP with no message at all.
+# Stride 2 matches the two-byte (port, pin) entries the pin lists decode into.
+HW_VERSION = os.environ.get("HAL_ADAM_HWVER", "A1000")
 
 
 def pin_list(port_pins) -> str:

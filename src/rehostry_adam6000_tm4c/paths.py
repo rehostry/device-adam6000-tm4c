@@ -30,6 +30,12 @@ CONFIG_FILES = [
 ]
 
 # Optional overlay that bridges a firmware seam (e.g. a UART ring buffer) to a
+# Extra overlay for the provisioned path (HAL_ADAM_PROFILE=1): once the module
+# believes it has I/O it runs a delay loop that needs the clock ticked from
+# inside it. Kept out of CONFIG_FILES because the intercept is on a hot
+# function and should not be registered on runs that do not need it.
+PROFILE_CONFIG = "adam6000_tm4c_profile.yaml"
+
 # host TCP server. Layered on top of CONFIG_FILES. Delete if your device has no
 # host-facing seam.
 # TODO: name your bridge overlay, or remove bridge support entirely.
