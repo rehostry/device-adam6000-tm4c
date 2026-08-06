@@ -18,3 +18,5 @@
 intercepts:
   - class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi
     function: hal_delay_yield
+  - class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi
+    function: main_idle_park

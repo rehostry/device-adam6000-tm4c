@@ -111,6 +111,10 @@ RECOVERED_SYMBOLS = {
     # The loop spins on a SysTick-driven counter and makes no ROM calls, so a
     # clock paced off ROM calls never advances and the delay never expires.
     0x00032568: ("hal_delay_yield", bytes.fromhex("15f0c4bf")),
+    # `b .` at the end of main(). NOT a fault: for A1000/A2000 hardware main()
+    # sets the status LED (a tail call into ROM GPIOPinWrite) and then parks
+    # here forever, with all further work driven by interrupts.
+    0x0001DE8E: ("main_idle_park", bytes.fromhex("fee7")),
 }
 
 # Size of the generated `bx lr` stub region. Must match the config's

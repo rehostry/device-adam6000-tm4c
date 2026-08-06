@@ -189,6 +189,29 @@ class TivaRomApi(BPHandler):
         if apb is not None:
             apb.set_backend(qemu)
 
+    @bp_handler(["main_idle_park"])
+    def main_idle_park(self, qemu: Any,
+                       bp_addr: int) -> Tuple[bool, Optional[int]]:
+        """Keep the clock running while the firmware sits in its idle loop.
+
+        THE PARK IS THE DEVICE'S NORMAL STATE, not a hang. `main()` ends with
+        `bl <set status LED>; b .` -- and that LED call is a tail call into ROM
+        GPIOPinWrite, so it returns straight into the `b .`. From there the
+        whole device runs on interrupts: SysTick drives lwIP's timers and the
+        EMAC ISR drives the network.
+
+        Which is exactly where a clock paced off ROM calls dies. Parked, the
+        firmware makes no ROM calls at all, so SysTick never advances, no
+        interrupt is ever delivered, and a device that is actually alive looks
+        completely frozen -- it reaches `IP ready.`, binds nothing, and resets
+        every connection. Ticking here is what makes the idle state idle rather
+        than dead.
+
+        Passive: the `b .` still executes, as it does on silicon.
+        """
+        self._tick(qemu)
+        return False, None
+
     @bp_handler(["hal_delay_yield"])
     def delay_yield(self, qemu: Any,
                     bp_addr: int) -> Tuple[bool, Optional[int]]:

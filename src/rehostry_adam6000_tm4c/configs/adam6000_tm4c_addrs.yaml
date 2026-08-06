@@ -12,6 +12,7 @@ symbols:
   61630: hardfault_spin
   61632: default_handler_spin
   120242: lwip_trap_spin
+  122510: main_idle_park
   206184: hal_delay_yield
   282976: bss_copy_loop
   # --- synthetic: TivaWare ROM call landing pads ---
