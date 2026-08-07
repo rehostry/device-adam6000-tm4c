@@ -120,17 +120,26 @@ the raw exchange. All 18 checks pass on a working tree:
   ```
 
   Twelve inputs, six outputs, model index 0 of its own 6050/6051/6052/6060/6066
-  table. The boot now runs all the way to `IP ready.` on this path too, given
-  the extra config: add `-c adam6000_tm4c_profile.yaml`, which ticks the clock
-  from inside the firmware's millisecond delay loop (see that file for why it
-  is not in the main config).
+  table.
 
-  **What still does not work is Modbus itself.** With a profile the device
-  answers every SYN on port 502 with RST — the server never binds, even though
-  lwIP is up and the interface has an address. That is the open question on
-  this path, and it is a different one from the boot stalls that preceded it.
-  Provisioning is therefore **opt-in** (`HAL_ADAM_PROFILE=1`); the default
-  remains the erased part, which boots and answers.
+  **The provisioned boot does not complete, and Modbus never binds on it.**
+  There are two distinct walls, and which one you hit depends on `HWver`:
+
+  * `HWver` matching **"A1000"/"A2000"** (the two the firmware recognises, and
+    the only ones that give a non-zero pin-array stride) parks the boot at 26
+    console lines, before `IP ready.` — via the `r2 == 0` branch at
+    `0x0001DE46`, i.e. the pool loop allocated nothing.
+  * `HWver` matching **neither** (e.g. "A1.0") gets 30 lines — past
+    `IP ready.` — and then hangs inside `Backup_FW_Image`: it prints
+    `[DownloadPage 1]` but never `Backup_FW_Image success`, which the working
+    unprovisioned build does print, and it manages ~5 SPI transfers against
+    ~24. The Modbus listener binds after that point, so every SYN is reset.
+
+  The model number makes no difference (6050 and 6060 behave identically), and
+  the shipped default is "A1000" — the *first* wall. Provisioning is therefore
+  **opt-in** (`HAL_ADAM_PROFILE=1`) and requires the extra overlay
+  (`spawn_argv` adds `adam6000_tm4c_profile.yaml` automatically); the default
+  remains the erased part, which boots and answers Modbus.
 - The web panel renders device state as JSON rather than a coil grid.
 
 ## Debugging aids
