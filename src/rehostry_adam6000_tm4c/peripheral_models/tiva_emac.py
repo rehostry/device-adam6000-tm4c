@@ -26,6 +26,14 @@ hands a descriptor to the DMA by setting it; the DMA clears it when done. This
 model does the same thing from the other side, so the firmware's own ring
 walking, buffer recycling and interrupt handling are all exercised rather than
 bypassed.
+
+AND RECYCLING IS NOT OPTIONAL. Handing the descriptor back is only half of what
+the DMA does; it also raises transmit-complete, and that bit is the *only* thing
+that runs this driver's reclaim. Without it the ring's pbuf pointers are never
+cleared and `tivaif_transmit` refuses every frame after one lap -- the device
+answers the first request after boot and then goes deaf. Both the reclaim
+(STATIC_TXBUF below) and the ring length (`_ring_len`) were wrong here, and the
+symptom of each was the same silence.
 """
 from __future__ import annotations
 
@@ -68,15 +76,52 @@ PHY_ANLPAR_VALUE = 0x41E1
 EMAC_INT_TRANSMIT = 1 << 0
 EMAC_INT_RECEIVE = 1 << 6
 
-# Whether to raise transmit-complete (``HAL_ADAM_TX_COMPLETE=1``). OFF by
-# default, and this is a stated limitation rather than an oversight: asserting
-# it sends the driver into its pbuf-reclaim walk, which indexes the transmit
-# ring from bookkeeping this model does not participate in, and the walk wrote
-# through a descriptor slot that was not one -- corrupting its own ring manager
-# and faulting on the next iteration. Leaving it unasserted means transmit
-# buffers are not reclaimed, which for a short session costs memory and nothing
-# else; the receive path, which is what carries the protocol, is unaffected.
-REPORT_TX_COMPLETE = os.environ.get("HAL_ADAM_TX_COMPLETE") == "1"
+# THE RECLAIM GATE. `HAL_ADAM_STATIC_TXBUF=1` withholds transmit-complete, which
+# is the FALSIFICATION KNOB for the leak this model used to have: the driver's
+# only reclaim path is gated on this bit, so without it nothing is ever freed
+# and the device goes deaf. It is off by default -- the model reports
+# transmit-complete, as the silicon does.
+#
+# THE ASSUMPTION THAT WAS WRONG. This model previously left the bit unasserted
+# and said so in a comment: "transmit buffers are not reclaimed, which for a
+# short session costs memory and nothing else". That is false, and the firmware
+# says why. `tivaif_transmit` at 0x0001CC06 refuses to send at all when the
+# descriptor it is about to write still carries a pbuf:
+#
+#     1cc0e:  ldr   r1, [r0]          ; pTxDescList->pDescriptors
+#     1cc10:  ldr   r0, [r0, #0xc]    ; ->ui32Write
+#     1cc12:  mul   r0, r8, r0        ; * 0x24 (36 bytes/descriptor)
+#     1cc1a:  ldr   r0, [sb, #0x20]   ; pDescriptors[write].pBuf
+#     1cc1e:  cmp   r0, #0
+#     1cc22:  beq   0x1cc4c           ; free -> go on
+#     1cc24:  bl    pbuf_free         ; NOT free -> drop the frame, return -1
+#
+# and it also sizes the free run from ui32Read, which only the reclaim advances:
+#
+#     1cc52:  ldr   r2, [r1, #8]      ; ui32Read
+#     1cc54:  ldr   r1, [r1, #0xc]    ; ui32Write
+#     1cc5e:  rsb   r1, r1, #0x18     ; 24 - write   (NUM_TX_DESCRIPTORS = 24)
+#
+# `pBuf` is cleared, and `ui32Read` advanced, in exactly one place --
+# `tivaif_process_transmit` at 0x0001CD6A -- and `tivaif_interrupt` at
+# 0x0001D1B2 reaches it only when bit 0 of the DMA status word is set:
+#
+#     1d1b2:  lsls  r0, r5, #0x1f     ; bit 0 == EMAC_INT_TRANSMIT
+#     1d1b4:  bpl   0x1d1c2           ; clear -> skip the reclaim entirely
+#     1d1bc:  mov   r0, r6            ; pIF
+#     1d1be:  bl    0x1cd6a           ; tivaif_process_transmit
+#
+# So withholding the bit does not cost memory: it costs the device its
+# transmitter, one ring-lap after boot.
+STATIC_TXBUF = os.environ.get("HAL_ADAM_STATIC_TXBUF") == "1"
+
+# THE SECOND KNOB, for the second defect. `HAL_ADAM_EMAC_NO_CURSOR=1` restores
+# the ring walk this model used to do -- scan from index 0, use the first slot
+# the DMA owns -- which deadlocks against the driver's own read index (see
+# TivaEmac._walk). A third is already available as `HAL_ADAM_EMAC_RING_LEN=16`,
+# which pins the ring scan back to the fixed 16 the model shipped with.
+# Each one, alone, ends the conversation; that is what makes each fix testable.
+NO_CURSOR = os.environ.get("HAL_ADAM_EMAC_NO_CURSOR") == "1"
 
 # Descriptor word 0, bit 31: 1 = the DMA owns it, 0 = the CPU owns it.
 DES0_OWN = 1 << 31
@@ -84,6 +129,10 @@ DES0_OWN = 1 << 31
 RDES0_FL_SHIFT = 16
 RDES0_FS = 1 << 9
 RDES0_LS = 1 << 8
+# RDES1 bit 14, "second address chained". The driver stamps it into word 1 of
+# every receive descriptor it arms, and transmit descriptors never carry it --
+# so it is what tells the two rings apart, per descriptor.
+RDES1_RCH = 1 << 14
 # Transmit control: first/last segment, and the interrupt-on-completion flag.
 TDES0_LS = 1 << 29
 TDES0_FS = 1 << 28
@@ -91,13 +140,20 @@ TDES0_FS = 1 << 28
 DES1_SIZE_MASK = 0x1FFF
 
 MAX_FRAME = 1536
+# An upper bound on how far the chain-walk below will follow a ring, so a
+# malformed link field cannot turn into an unbounded scan.
+MAX_RING = 64
 
 # The device's own MAC. 00:D0:C9 is Advantech's real OUI; the low three octets
 # come from the firmware's configuration, which on a blank unit reads back as
 # 0xFE 0xFF 0xFF -- exactly what it printed on the console as
 # "MACID:0.d0.c9.fe.ff.ff".
 DEVICE_MAC = bytes.fromhex(os.environ.get("HAL_ADAM_MAC", "00d0c9feffff"))
-# How many descriptors to scan in a ring. TivaWare's lwIP port uses far fewer.
+# Fallback ring length, used only if the descriptor chain cannot be followed
+# (see TivaEmac._ring_len). It is NOT the ring size: this device's transmit ring
+# is 24 descriptors, and scanning a fixed 16 of them is what silently stranded
+# descriptors 16..23 -- the firmware kept handing them to a DMA engine that
+# never looked, and the device stopped transmitting after exactly 16 frames.
 RING_SCAN = 16
 
 
@@ -147,6 +203,11 @@ class TivaEmac(SocCatchAll):
         self.tx_count = 0
         self.rx_count = 0
         self.rx_irq_pending = False
+        self.tx_irq_pending = False
+        self.tx_reclaims = 0
+        self._ring_lens: Dict[int, int] = {}
+        # One DMA cursor per ring -- see _walk. The hardware has exactly this.
+        self._cursors: Dict[int, int] = {}
         self.int_status = 0
         self.stride = descriptor_stride()
         self._dumped = False
@@ -201,6 +262,61 @@ class TivaEmac(SocCatchAll):
         return [int.from_bytes(raw[i * 4:i * 4 + 4], "little")
                 for i in range(count)]
 
+    def _ring_len(self, base: int) -> int:
+        """How many descriptors are in the ring at ``base``.
+
+        MEASURED FROM THE FIRMWARE'S OWN CHAIN, not assumed. Both rings are
+        built in *chained* mode -- the transmit descriptors carry
+        DES0_TX_CTRL_CHAINED (0x00100000, visible in the ring dump as the `D` of
+        0xF0D00000) and the receive ones DES1_RX_CTRL_CHAINED (0x4000, the `4`
+        of 0x00004300) -- and a chained descriptor's word 3 is the address of
+        the next one, with the last linking back to the first. Following that
+        link until it closes gives the exact count:
+
+            EMAC: ring at 0x20020f60 first words: ... 20020f84 ...
+            0x20020f84 - 0x20020f60 = 36 = the descriptor stride
+
+        A fixed scan was the alternative and it was wrong. The transmit ring is
+        24 descriptors -- the firmware's own wrap constant, `rsb r1, r1, #0x18`
+        at 0x0001CC5E and `cmp sb, #0x18` at 0x0001CCDC -- so scanning 16 left
+        eight of them permanently owned by a DMA engine that never serviced
+        them, and the device fell silent after 16 frames.
+
+        The count is cached only once the chain closes, so a poll that arrives
+        while the driver is still building the ring does not freeze a wrong
+        answer.
+        """
+        cached = self._ring_lens.get(base)
+        if cached is not None:
+            return cached
+        override = os.environ.get("HAL_ADAM_EMAC_RING_LEN")
+        if override:
+            n = int(override, 0)
+            self._ring_lens[base] = n
+            return n
+        addr, n = base, 0
+        while n < MAX_RING:
+            words = self._read_words(addr, 4)
+            if len(words) < 4:
+                n = 0
+                break
+            n += 1
+            nxt = words[3]
+            if nxt == base:                      # the ring closed
+                break
+            if nxt != addr + self.stride:        # not a contiguous chain
+                n = 0
+                break
+            addr = nxt
+        else:
+            n = 0                                # never closed within MAX_RING
+        if not n:
+            return RING_SCAN                     # not built yet; do not cache
+        self._ring_lens[base] = n
+        log.info("EMAC: ring at 0x%08x is %d descriptors (followed the "
+                 "firmware's own chain, %d bytes apart)", base, n, self.stride)
+        return n
+
     # -- the frame path ----------------------------------------------------
     def poll(self) -> None:
         """Walk the rings: send what the firmware handed us, deliver what is
@@ -208,30 +324,116 @@ class TivaEmac(SocCatchAll):
         if self._backend is None or not self.lists:
             return
         self.dump_rings()
+        if os.environ.get("HAL_ADAM_EMAC_DEBUG") == "1":
+            self._dbg_polls = getattr(self, "_dbg_polls", 0) + 1
+            if self._dbg_polls % 400 == 0:
+                self._debug_state()
         for base in self.lists:
             self._walk(base)
 
-    def _walk(self, base: int) -> None:
-        """Look at one ring and act on whatever the DMA owns.
+    def _debug_state(self) -> None:
+        """Dump both rings and the model's own cursors (HAL_ADAM_EMAC_DEBUG=1).
 
-        A descriptor the firmware has given away (OWN set) with a non-empty
-        buffer LENGTH in word 1 is something to transmit; one with a buffer but
-        no length is a receive buffer waiting to be filled. That distinction is
-        what identifies the two rings, rather than an assumption about which API
-        entry registered which.
+        THIS IS THE VIEW THAT FOUND THE DEADLOCK, and it is kept because no
+        smaller one would have. Reading the descriptors alone shows owner bits
+        drifting and says nothing about why; reading the *driver's* `ui32Read` /
+        `ui32Write` beside them is what showed the receive index frozen at 3
+        while the model kept consuming descriptors 4, 5, 6 ... -- two engines
+        walking the same ring in different places.
         """
-        for i in range(RING_SCAN):
-            addr = base + i * self.stride
+        log.error("DBG cursors=%s int_status=0x%x rxq=%d rx_irq=%s tx_irq=%s "
+                  "tx=%d rx=%d", self._cursors, self.int_status,
+                  len(self.rx_queue), self.rx_irq_pending, self.tx_irq_pending,
+                  self.tx_count, self.rx_count)
+        for base in self.lists:
+            self._debug_ring(base)
+
+    def _debug_ring(self, base: int) -> None:
+        """Dump one ring's owner bits and pbuf pointers (HAL_ADAM_EMAC_DEBUG)."""
+        n = self._ring_len(base)
+        own = []
+        pbuf = []
+        for i in range(n):
+            w = self._read_words(base + i * self.stride, 9)
+            if len(w) < 9:
+                return
+            own.append("1" if w[0] & DES0_OWN else "0")
+            pbuf.append("1" if w[8] else "0")
+        idx = ""
+        st = self._find_list_struct(base)
+        if st:
+            w = self._read_words(st, 4)
+            if len(w) == 4:
+                idx = "  list@0x%08x n=%d rd=%d wr=%d" % (st, w[1], w[2], w[3])
+        log.error("DBG ring 0x%08x own=%s pbuf=%s%s", base, "".join(own),
+                  "".join(pbuf), idx)
+
+    def _find_list_struct(self, base: int) -> int:
+        """Locate the driver's tDescriptorList for the ring at ``base``."""
+        got = getattr(self, "_list_structs", None)
+        if got is None:
+            got = self._list_structs = {}
+        if base in got:
+            return got[base]
+        n = self._ring_len(base)
+        for a in range(0x20000000, 0x20010000, 4):
+            w = self._read_words(a, 2)
+            if len(w) == 2 and w[0] == base and w[1] == n:
+                got[base] = a
+                return a
+        got[base] = 0
+        return 0
+
+    def _walk(self, base: int) -> None:
+        """Advance this ring's DMA cursor over whatever the firmware has handed
+        over, in ring order.
+
+        THE CURSOR IS THE POINT, and its absence was a real defect. A Synopsys
+        DMA holds a *current descriptor pointer* per ring; it services that one,
+        moves to the next, and wraps. It never goes back and picks whichever
+        descriptor happens to be free. This model used to scan from index 0
+        every poll and use the first available slot, and that quietly
+        deadlocked the receive path:
+
+          * the driver reads at its own `ui32Read` and stops the moment that
+            descriptor is still DMA-owned -- `ldr r0,[pDescriptors,read*0x24];
+            cmp r0,#0; bmi <exit>` at 0x0001CE26;
+          * the model delivered three frames into descriptors 0,1,2; the driver
+            consumed them, re-armed all three and left `ui32Read` at 3;
+          * the next frame went to descriptor 0, because that was the lowest
+            slot the DMA "owned" again. The driver looked at descriptor 3, found
+            it armed and empty, and stopped -- for good.
+
+        `ui32Read` never moved off 3 again, every later frame landed in a slot
+        the driver would not look at until it had gone all the way round, and
+        the device fell silent after five exchanges. The receive ring drains one
+        descriptor per retransmission and nothing is ever picked up.
+
+        A cursor makes the two agree by construction: the DMA fills in the same
+        order the driver reads, and stalls -- as the hardware does -- on the
+        first descriptor the CPU still owns.
+
+        WHICH RING IS WHICH IS READ OFF THE DESCRIPTOR, not assumed. The driver
+        writes 0x4000 into word 1 of every receive descriptor when it arms one
+        (`mov.w r2, #0x4000; str r2,[r0,r1]` at 0x0001CE7C, before it ORs in the
+        buffer length at 0x0001CEB0) -- that is RDES1's "second address
+        chained". Transmit descriptors carry their chaining flag in word 0
+        instead, so word 1 bit 14 separates the two cleanly and per descriptor.
+        """
+        n = self._ring_len(base)
+        if NO_CURSOR:
+            return self._walk_no_cursor(base, n)
+        cursor = self._cursors.get(base, 0)
+        for _ in range(n):
+            addr = base + cursor * self.stride
             words = self._read_words(addr, 4)
             if len(words) < 4 or not words[0] & DES0_OWN:
-                continue
+                break                    # the CPU owns it: the DMA suspends
             length = words[1] & DES1_SIZE_MASK
             buf = words[2]
             if not buf:
-                continue
-            if length and words[0] & (TDES0_FS | TDES0_LS):
-                self._transmit(addr, buf, length, words)
-            elif self.rx_queue and self.tx_count:
+                break
+            if words[1] & RDES1_RCH:
                 # NOT BEFORE THE DRIVER HAS SPOKEN. The receive ring is armed
                 # early in initialisation, long before the lwIP driver's own
                 # state is built -- so a frame delivered too soon is picked up
@@ -240,7 +442,41 @@ class TivaEmac(SocCatchAll):
                 # device's first transmission is a sound proxy for "the driver
                 # is live", and it is also physically honest: a MAC that has not
                 # finished coming up does not have a link to receive on.
-                self._receive(addr, buf, length)
+                if not (self.rx_queue and self.tx_count):
+                    break
+                if not self._receive(addr, buf, length):
+                    break
+            elif length:
+                self._transmit(addr, buf, length, words)
+            else:
+                break
+            cursor = (cursor + 1) % n
+        self._cursors[base] = cursor
+
+    def _walk_no_cursor(self, base: int, n: int) -> None:
+        """The engine this model used to have (``HAL_ADAM_EMAC_NO_CURSOR=1``).
+
+        FALSIFICATION KNOB. Scan from index 0 and use the first slot the DMA
+        owns -- no cursor, no ring order. It looks equivalent and is not: it
+        deadlocks against the driver's own read index, exactly as described in
+        `_walk`. Turn it on and the sustained conversation collapses again,
+        which is what makes the cursor above a claim that can be tested rather
+        than an assertion.
+        """
+        for i in range(n):
+            addr = base + i * self.stride
+            words = self._read_words(addr, 4)
+            if len(words) < 4 or not words[0] & DES0_OWN:
+                continue
+            length = words[1] & DES1_SIZE_MASK
+            buf = words[2]
+            if not buf:
+                continue
+            if words[1] & RDES1_RCH:
+                if self.rx_queue and self.tx_count:
+                    self._receive(addr, buf, length)
+            elif length:
+                self._transmit(addr, buf, length, words)
 
     def _transmit(self, desc: int, buf: int, length: int, words) -> None:
         frame = b""
@@ -271,10 +507,18 @@ class TivaEmac(SocCatchAll):
         # the frame is on the wire, and raise the transmit-complete status the
         # driver reads in its ISR.
         self._write_word(desc, words[0] & ~DES0_OWN)
-        if REPORT_TX_COMPLETE:
+        if not STATIC_TXBUF:
+            # The frame is on the wire, so the DMA raises transmit-complete --
+            # which is the only thing that will run the driver's reclaim
+            # (`tivaif_process_transmit`, 0x0001CD6A) and free the pbuf and the
+            # descriptor slot for the next frame. See STATIC_TXBUF above.
             self.int_status |= EMAC_INT_TRANSMIT
+            self.tx_irq_pending = True
+            self.tx_reclaims += 1
 
-    def _receive(self, desc: int, buf: int, size: int) -> None:
+    def _receive(self, desc: int, buf: int, size: int) -> bool:
+        """Land one queued frame in this descriptor. False if it could not be
+        placed, which stalls the cursor rather than skipping the slot."""
         frame = self.rx_queue[0]
         # THE LENGTH THE MAC REPORTS INCLUDES THE FCS, and the driver subtracts
         # four before handing the frame to lwIP. Report the payload length and
@@ -284,13 +528,13 @@ class TivaEmac(SocCatchAll):
         # because the driver's buffer accounting expects them to be there.
         on_wire = frame + b"\x00" * 4           # placeholder FCS
         if size and len(on_wire) > size:
-            return                               # will not fit this buffer
+            return False                         # will not fit this buffer
         if self._backend is None:
-            return
+            return False
         try:
             self._backend.write_memory(buf, 1, on_wire, len(on_wire))
         except Exception:                        # noqa: BLE001
-            return
+            return False
         self.rx_queue.pop(0)
         self.rx_count += 1
         # A real MAC raises its interrupt when a frame lands. The firmware also
@@ -305,6 +549,7 @@ class TivaEmac(SocCatchAll):
         if self.rx_count <= 24:
             log.info("EMAC RX #%d: %d bytes into 0x%08x", self.rx_count,
                      len(frame), buf)
+        return True
 
     def deliver(self, frame: bytes) -> None:
         """Queue an Ethernet frame for the firmware to receive."""

@@ -18,16 +18,29 @@ That is not a defect in this firmware; it is what Modbus is. The finding is that
 this is a device sold to sit on a plant network and drive equipment, and its
 control interface is a socket that will do what anyone tells it.
 
-THE ORACLE IS THE FIRMWARE'S OWN COIL STATE. The attack writes a coil and then
-*reads it back* through a separate request. The value that comes back is the
-firmware's, held in its own Modbus data model, and it travels the whole modelled
-stack to get here: the firmware's Modbus server -> lwIP -> the EMAC's transmit
-descriptor ring -> an Ethernet frame -> the modelled peer's TCP/IPv4 -> this
-socket. Nothing short-circuits, and nothing on the host decides the answer.
+THE ORACLE IS A SUSTAINED CONVERSATION WITH ONE GUEST. Forty requests, every
+one of them different in transaction id, unit id, function code, address and
+quantity, down a single TCP connection to a single booted device. Every reply
+has to carry its own request's transaction and unit id back, echo its function
+byte (plain when the device can answer, with the error bit when it cannot), and
+-- when it answers with data -- be sized from the quantity field that request
+chose. All of it travels the whole modelled stack: the firmware's Modbus server
+-> lwIP -> the EMAC's transmit descriptor ring -> an Ethernet frame -> the
+modelled peer's TCP/IPv4 -> this socket. Nothing short-circuits, and nothing on
+the host decides the answer.
 
-A negative control runs first: a function code the device does not implement
-must come back as a Modbus **exception** (function | 0x80). A rehost that echoed
-bytes, or a bridge that answered on the firmware's behalf, would fail it.
+WHY N > 1 IS THE WHOLE POINT. This module used to boot a fresh device for each
+probe and ask it one question. `landed = all(checks)` looked like a strong
+conjunction and was not: each clause was answered by a different device on its
+first exchange, so the oracle could not have noticed that no guest ever answered
+a second question -- which, for three separate reasons in the MAC model, none of
+them did. See STATUS.md.
+
+A negative control runs throughout: function code 0x41 is not a Modbus function
+and must always come back as an exception with code 1 (illegal function), while
+a supported function aimed at an address this module does not have must come
+back as code 2 (illegal data address). A rehost that echoed bytes, or a bridge
+answering on the firmware's behalf, would not tell those apart.
 """
 from __future__ import annotations
 
@@ -37,7 +50,6 @@ import socket
 import struct
 import subprocess
 import sys
-import threading
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -73,7 +85,11 @@ class DeviceScenario:
                  log_dir: Optional[str] = None) -> None:
         self.bridge_port = bridge_port
         self.python = python or os.environ.get("HAL_PY") or sys.executable
-        self.log_dir = log_dir or "/tmp"
+        # ONE LOG PER RUN, NOT ONE PER MACHINE. The emulator log is where
+        # `console()` reads the firmware's own output, so two arms sharing
+        # /tmp/adam6000_tm4c_attack.log grade each other's boot -- which is
+        # exactly how a control arm can come out looking like the attack arm.
+        self.log_dir = log_dir or os.environ.get("HAL_ADAM_LOG_DIR") or "/tmp"
         self.host = "127.0.0.1"
         self._procs: List[subprocess.Popen] = []
         self.sock: Optional[socket.socket] = None
@@ -214,6 +230,39 @@ class DeviceScenario:
         self.transcript.append({"sent": frame.hex(), "recv": bytes(buf).hex()})
         return bytes(buf[7:])
 
+    def exchange(self, txn: int, unit: int, pdu: bytes,
+                 timeout: float = 30.0) -> Optional[bytes]:
+        """One request/response, with the **whole** ADU returned.
+
+        `request` above hides the MBAP header, which is exactly the part that
+        makes a reply attributable to its own request: an oracle that only ever
+        sees the PDU cannot tell a fresh answer from a stale one still sitting
+        in a buffer. Everything here that varies per request -- the transaction
+        id, the unit id, the function code -- has to come back.
+        """
+        assert self.sock is not None
+        frame = mbap(txn, pdu, unit=unit)
+        self.sock.sendall(frame)
+        buf = bytearray()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self.sock.settimeout(max(0.5, deadline - time.time()))
+            try:
+                data = self.sock.recv(512)
+            except socket.timeout:
+                break
+            except OSError:
+                break
+            if not data:
+                break
+            buf.extend(data)
+            if len(buf) >= 6:
+                need = 6 + struct.unpack(">H", bytes(buf[4:6]))[0]
+                if len(buf) >= need:
+                    break
+        self.transcript.append({"sent": frame.hex(), "recv": bytes(buf).hex()})
+        return bytes(buf) if len(buf) >= 8 else None
+
     def read_coils(self, start: int, count: int) -> Optional[List[int]]:
         pdu = self.request(struct.pack(">BHH", FN_READ_COILS, start, count))
         if not pdu or pdu[0] != FN_READ_COILS or len(pdu) < 2:
@@ -233,11 +282,12 @@ class DeviceScenario:
     def read_state(self) -> Dict:
         """What the device says about itself -- from its console, not Modbus.
 
-        DELIBERATELY NOT A MODBUS READ. This device answers the first request
-        after boot and then stops picking up later ones (README, "Known
-        limits"), so a state pane that polled over Modbus would spend the one
-        exchange the run has and leave none for the attack. Everything here is
-        the firmware's own output.
+        NOT A MODBUS READ, because there is nothing to read: this module's I/O
+        profile lives in a serial flash the vendor image does not carry, so it
+        reports zero I/O points and every data address is illegal. Everything
+        here is the firmware's own console output. (This used to be justified by
+        the device only answering once per boot -- that was a defect in the MAC
+        model, not a property of the firmware, and it is fixed.)
         """
         facts: Dict = {"ip": None, "mac": None, "model": None,
                        "io_points": None, "profile_in_serial_flash": None,
@@ -266,141 +316,302 @@ class DeviceScenario:
 
     # ---- the attack -------------------------------------------------------
     def attack(self, on_stage: Optional[Callable] = None) -> Dict:
-        """One unauthenticated Modbus request, and what came back.
+        """A sustained conversation with **one** guest, and what came back.
 
-        ONE REQUEST, ON PURPOSE. The device answers the first request after
-        boot and does not pick up later ones, so this spends that exchange on
-        the single most informative probe and leaves the discrimination
-        argument to `run_attack`, which boots a device per probe.
+        ONE GUEST, MANY QUESTIONS. Asking a freshly-booted device a single
+        question and grading the answer cannot distinguish a working server
+        from one that answers once and dies -- and this rehost was the second
+        kind, for a reason that was entirely in the MAC model (see
+        `peripheral_models/tiva_emac.py`). So the probe set below runs down one
+        TCP connection to one guest, and the count that survives is reported.
         """
-        def _stage(name: str, **kw) -> None:
-            if on_stage:
-                on_stage(name, **kw)
-
-        checks: Dict[str, bool] = {}
-        out: Dict = {"checks": checks}
-
-        _stage("request", note="reading output coils 0..7 -- no credential, "
-                               "no session, no handshake beyond TCP")
-        pdu = self.request(struct.pack(">BHH", FN_READ_COILS, 0, 8))
-        out["response"] = pdu.hex() if pdu else None
-
-        # The round trip itself is the finding: an anonymous peer on the
-        # segment got the device's own Modbus server to answer it.
-        checks["device_answered"] = pdu is not None and len(pdu) >= 2
-        _stage("request", note="device answered: %s"
-                                % (pdu.hex() if pdu else "<nothing>"))
-
-        if pdu and len(pdu) >= 2:
-            # Exception 2 is the correct answer from a module that has no I/O
-            # points, because its profile lives in the serial flash and the
-            # vendor image does not carry that flash. See the module docstring.
-            checks["function_echoed"] = pdu[0] == (FN_READ_COILS | 0x80)
-            checks["illegal_data_address"] = pdu[1] == 2
-            out["meaning"] = ("exception 2, illegal data address -- this "
-                              "module reports no I/O points because its "
-                              "profile is in the blank serial flash")
-        console = "\n".join(self.console())
-        checks["profile_missing_is_explained"] = (
-            "GetDevInfo() Err" in console and "g_usModel = 255" in console)
-        checks["stack_is_the_firmwares_own"] = "IP ready." in console
-
-        out["landed"] = all(checks.values())
-        return out
+        return converse(self, on_stage)
 
 
 # Each probe: a label, the PDU, the function byte the device should echo with
 # the error bit set, and the exception code it should choose.
 PROBES: List[Tuple[str, bytes, int, int]] = [
-    ("read coils 0..7", struct.pack(">BHH", FN_READ_COILS, 0, 8), 0x81, 2),
-    ("read discrete inputs 0..11",
+    ("read coils", struct.pack(">BHH", FN_READ_COILS, 0, 8), 0x81, 2),
+    ("read discrete inputs",
      struct.pack(">BHH", FN_READ_DISCRETE_INPUTS, 0, 12), 0x82, 2),
-    ("read holding regs 0..1",
+    ("read holding registers",
      struct.pack(">BHH", FN_READ_HOLDING, 0, 2), 0x83, 2),
-    ("write single coil 0",
+    ("write single coil",
      struct.pack(">BHH", FN_WRITE_SINGLE_COIL, 0, COIL_OFF), 0x85, 2),
     # The negative control: 0x41 is not a Modbus function code at all, and it
     # must be refused differently from a real one aimed at a bad address.
     ("bogus function 0x41", struct.pack(">BHH", FN_BOGUS, 0, 1), 0xC1, 1),
 ]
 
+# HOW MANY REQUESTS ONE GUEST MUST SURVIVE, and why this number. The firmware's
+# transmit ring is **24 descriptors** -- its own wrap constant, `rsb r1, r1,
+# #0x18` at 0x0001CC5E and `cmp sb, #0x18` at 0x0001CCDC -- and each Modbus
+# exchange costs at least one transmit descriptor (the response) plus the ACKs
+# around it. A run of 40 therefore laps that ring several times over, which is
+# precisely what the old rehost could not do: nothing was ever reclaimed, so it
+# fell silent at the first lap. Anything at or below 24 could pass on a ring
+# that is never recycled, so it would not be a test.
+SUSTAINED_N = int(os.environ.get("HAL_ADAM_SUSTAINED_N", "40"), 0)
+TX_RING_DESCRIPTORS = 24
 
-def run_attack(on_stage: Optional[Callable] = None,
-               log_dir: Optional[str] = None) -> Dict:
-    """Speak Modbus/TCP to the device -- one probe per boot, concurrently.
 
-    A DEVICE PER PROBE, because this rehost answers the first request after
-    boot and not the ones after it. Running them concurrently keeps the whole
-    set to roughly one boot's wall-clock.
+def _probe_for(i: int) -> Tuple[int, int, bytes, int, int, str]:
+    """Request number ``i``: transaction id, unit id, PDU, and what it must
+    come back as.
 
-    The point is not any single answer. It is that a supported function code
-    with an unusable address is refused as *illegal data address* while an
-    unsupported one is refused as *illegal function*, with the function byte
-    echoed and the top bit set in both. Nothing that merely pretends to be a
-    Modbus server tells those apart -- this is the vendor's own parser.
+    FRESH CONTENT EVERY TIME. The transaction id, the unit id, the function
+    code and the address all vary with ``i``, and all four are checked in the
+    reply. A device that had stopped listening and was replaying a buffered
+    answer would fail on the first of them; so would a host-side bridge that
+    had learned to answer on the firmware's behalf.
+    """
+    label, pdu, want_fc, want_code = PROBES[i % len(PROBES)]
+    txn = (0xB100 + i * 37) & 0xFFFF
+    unit = (i % 247) + 1
+    # Walk the address space as well, so no two requests of the same function
+    # are byte-identical. Every address on this module is illegal (its I/O
+    # profile is in the blank serial flash), so the expected answer does not
+    # change -- but the bytes on the wire do.
+    addr = (i * 29) & 0x7FFF
+    fc = pdu[0]
+    if fc == FN_WRITE_SINGLE_COIL:
+        # Keep the value legal (0x0000 / 0xFF00) so the refusal stays
+        # "illegal data address" and not "illegal data value".
+        body = struct.pack(">BHH", fc, addr, COIL_ON if i % 2 else COIL_OFF)
+    elif fc == FN_BOGUS:
+        body = struct.pack(">BHH", fc, addr, 1)
+    else:
+        body = struct.pack(">BHH", fc, addr, (i % 8) + 1)
+    return txn, unit, body, want_fc, want_code, label
+
+
+def _check_success(fc: int, request_pdu: bytes,
+                   adu: bytes) -> Optional[str]:
+    """Is this successful reply well formed *for the request that caused it*?
+
+    THIS IS WHERE A REPLAY WOULD DIE. The byte count of a read response is not
+    a constant: it is computed from the quantity field of the request, and this
+    run picks a different quantity for almost every request. A canned answer,
+    or a stale one still in a buffer, cannot satisfy it -- and neither can a
+    host-side bridge that has not parsed the request.
+
+    Returns None if the reply is sound, or a description of what is wrong.
+    """
+    addr, qty = struct.unpack(">HH", request_pdu[1:5])
+    body = adu[7:]                               # the response PDU
+    if fc in (FN_READ_COILS, FN_READ_DISCRETE_INPUTS):
+        want = (qty + 7) // 8                    # bits, packed
+    elif fc == FN_READ_HOLDING:
+        want = qty * 2                           # 16-bit registers
+    elif fc == FN_WRITE_SINGLE_COIL:
+        # A write echoes the request's address and value verbatim.
+        if len(body) != 5:
+            return "write echo is %d PDU bytes, expected 5" % len(body)
+        got_addr, got_val = struct.unpack(">HH", body[1:5])
+        if (got_addr, got_val) != (addr, qty):
+            return ("write echo is addr 0x%04x value 0x%04x, sent addr 0x%04x "
+                    "value 0x%04x" % (got_addr, got_val, addr, qty))
+        return None
+    else:
+        return "function 0x%02x answered successfully; it is not a Modbus " \
+               "function and must be refused" % fc
+    if len(body) < 2:
+        return "response PDU is %d bytes" % len(body)
+    got = body[1]
+    if got != want:
+        return ("byte count is %d, but %d were asked for -- expected %d"
+                % (got, qty, want))
+    if len(body) != 2 + want:
+        return ("byte count says %d but the PDU carries %d"
+                % (want, len(body) - 2))
+    return None
+
+
+def converse(dev: "DeviceScenario", on_stage: Optional[Callable] = None,
+             count: int = SUSTAINED_N) -> Dict:
+    """Ask ONE booted guest ``count`` questions down one connection.
+
+    Returns the graded result. `run_attack` and the panel both go through here,
+    so there is one oracle and not two.
     """
     def _stage(name: str, **kw) -> None:
         if on_stage:
             on_stage(name, **kw)
 
-    base = int(os.environ.get("HAL_ADAM_ATTACK_PORT", "21300"), 0)
-    replies: Dict[str, Optional[bytes]] = {}
-    consoles: Dict[str, str] = {}
-    lock = threading.Lock()
-
-    def worker(index: int, label: str, pdu: bytes) -> None:
-        dev = DeviceScenario(bridge_port=base + index, log_dir=log_dir)
-        try:
-            if not dev.boot(lambda *a, **k: None):
-                with lock:
-                    replies[label] = None
-                return
-            answer = dev.request(pdu)
-            with lock:
-                replies[label] = answer
-                consoles[label] = "\n".join(dev.console())
-            _stage("probe", note="%s -> %s"
-                                 % (label, answer.hex() if answer else "<nothing>"))
-        finally:
-            dev.teardown()
-
-    _stage("boot", note="booting %d devices, one per probe" % len(PROBES))
-    threads = [threading.Thread(target=worker, args=(i, label, pdu))
-               for i, (label, pdu, _, _) in enumerate(PROBES)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-
     checks: Dict[str, bool] = {}
     detail: Dict[str, str] = {}
-    for label, _pdu, want_fc, want_code in PROBES:
-        reply = replies.get(label)
-        detail[label] = reply.hex() if reply else "<nothing>"
-        checks["answered: " + label] = bool(reply and len(reply) >= 2)
-        if reply and len(reply) >= 2:
-            checks["exception echoes the function: " + label] = \
-                reply[0] == want_fc
-            checks["exception code %d: %s" % (want_code, label)] = \
-                reply[1] == want_code
+    ok_streak = 0
+    first_miss: Optional[int] = None
+    replayed = False
+    misattributed = False
+    wrong_fc = False
+    malformed: List[str] = []
+    bogus_not_refused = False
+    seen_codes: Dict[int, int] = {}
+    successes = 0
+    exceptions = 0
+    previous: Optional[bytes] = None
 
-    bogus = replies.get("bogus function 0x41")
-    coils = replies.get("read coils 0..7")
-    checks["a real parser: unsupported and unusable differ"] = bool(
-        bogus and coils and len(bogus) >= 2 and len(coils) >= 2
-        and bogus[1] == 1 and coils[1] == 2)
+    _stage("request", note="%d unauthenticated Modbus requests down one "
+                           "connection to one guest -- no credential, no "
+                           "session, no handshake beyond TCP" % count)
+    for i in range(count):
+        txn, unit, pdu, _want_fc, want_code, label = _probe_for(i)
+        adu = dev.exchange(txn, unit, pdu)
+        if adu is None or len(adu) < 9:
+            first_miss = i
+            detail["request %02d %s" % (i, label)] = "<nothing>"
+            _stage("request", note="request %d went unanswered" % i)
+            break
+        got_txn = struct.unpack(">H", adu[0:2])[0]
+        if got_txn != txn or adu[6] != unit:
+            misattributed = True
+            first_miss = i
+            detail["request %02d %s" % (i, label)] = (adu.hex()
+                                                      + "   MISATTRIBUTED")
+            break
+        if adu == previous:
+            replayed = True
+        previous = adu
+        fc = pdu[0]
+        note = ""
+        if adu[7] == fc | 0x80:
+            # An exception: function byte echoed with the error bit set.
+            exceptions += 1
+            seen_codes[adu[8]] = seen_codes.get(adu[8], 0) + 1
+            note = "exception %d" % adu[8]
+            if fc == FN_BOGUS and adu[8] != want_code:
+                bogus_not_refused = True
+                note += "  (0x41 must be refused as illegal function)"
+        elif adu[7] == fc:
+            # A SUCCESSFUL ANSWER, which this device does give for some
+            # addresses -- see _check_success. Not every address on this
+            # module is illegal, and an oracle that insisted on an exception
+            # would fail on the firmware being MORE capable than expected.
+            successes += 1
+            if fc == FN_BOGUS:
+                bogus_not_refused = True     # 0x41 must never succeed
+            problem = _check_success(fc, pdu, adu)
+            if problem:
+                malformed.append("request %d: %s" % (i, problem))
+                note = "malformed success: " + problem
+            else:
+                note = "answered, %d PDU bytes" % (len(adu) - 7)
+        else:
+            wrong_fc = True
+            note = ("neither 0x%02x nor 0x%02x -- got 0x%02x"
+                    % (fc, fc | 0x80, adu[7]))
+        ok_streak += 1
+        detail["request %02d %s" % (i, label)] = "%s   %s" % (adu.hex(), note)
 
-    console = consoles.get("read coils 0..7", "")
-    checks["every address is illegal, and the device says why"] = (
+    # THE COUNT IS THE HEADLINE, and it is a check, not a footnote.
+    checks["answered %d consecutive requests on one guest" % count] = (
+        ok_streak >= count)
+    checks["every reply carried its own request's transaction and unit id"] = (
+        not misattributed and ok_streak > 0)
+    checks["no reply was a repeat of the one before it"] = (
+        not replayed and ok_streak > 0)
+    checks["every reply's function byte is its request's, plain or with the "
+           "error bit"] = not wrong_fc and ok_streak > 0
+    # THE STRUCTURE IS SIZED FROM THE REQUEST. A successful read's byte count
+    # is computed from the quantity field this run chose, so a canned or
+    # replayed answer cannot satisfy it.
+    checks["successful answers are sized from the request's own quantity "
+           "field"] = not malformed and ok_streak > 0
+    # The negative control: 0x41 is not a Modbus function, and a real parser
+    # refuses it differently from a supported function aimed at a bad address.
+    checks["0x41 is always refused as illegal function (1)"] = (
+        not bogus_not_refused and seen_codes.get(1, 0) > 0)
+    checks["a real parser: unsupported (1) and unusable (2) differ"] = (
+        seen_codes.get(1, 0) > 0 and seen_codes.get(2, 0) > 0)
+    # THE RING WAS RECYCLED. Below 24 exchanges the transmit ring need never
+    # have wrapped, so the sustained result would prove nothing about reclaim.
+    checks["the transmit ring was lapped (>%d exchanges)"
+           % TX_RING_DESCRIPTORS] = ok_streak > TX_RING_DESCRIPTORS
+
+    console = "\n".join(dev.console())
+    checks["the module reports no I/O profile, and says why"] = (
         "GetDevInfo() Err" in console and "g_usModel = 255" in console
         and "ucTotal_StatusPins = 0" in console)
     checks["the stack is the firmware's own"] = (
         "IP ready." in console and "ip=100000a" in console)
 
-    return {"booted": any(replies.values()),
+    # THE SEAM, named for what it is. Bytes IN: `count` Modbus/TCP PDUs from an
+    # anonymous peer, every one of them different, down a single TCP connection
+    # to a single guest. Bytes OUT: the vendor's own Modbus parser's replies --
+    # each carrying back that request's transaction id and unit id, echoing its
+    # function byte (plain when it can answer, with the error bit when it
+    # cannot), sizing successful answers from the quantity field this run chose,
+    # and CHOOSING between exception codes: illegal function (1) for 0x41, which
+    # is not a Modbus function at all, illegal data address (2) for a supported
+    # function aimed at an address this module does not have. Every one of them
+    # crossed lwIP, the EMAC transmit ring, an Ethernet frame and the modelled
+    # peer's TCP/IPv4. The console lines ("IP ready.", the model/pin counts) are
+    # M2/M3 corroboration and are NOT the seam.
+    modbus_round_trip = bool(
+        ok_streak >= count
+        and ok_streak > TX_RING_DESCRIPTORS
+        and not misattributed and not replayed
+        and not wrong_fc and not malformed and not bogus_not_refused
+        and checks["a real parser: unsupported (1) and unusable (2) differ"])
+    _stage("request", note="%d/%d answered; first unanswered request: %s"
+                           % (ok_streak, count,
+                              "none" if first_miss is None else first_miss))
+    return {"booted": "IP ready." in console,
             "landed": all(checks.values()),
+            "modbus_round_trip": modbus_round_trip,
+            # THE COUNT, in the result itself.
+            "sustained_round_trips": ok_streak,
+            "requests_attempted": count,
+            "first_unanswered_request": first_miss,
+            "tx_ring_descriptors": TX_RING_DESCRIPTORS,
+            "answers_with_data": successes,
+            "answers_that_were_exceptions": exceptions,
+            "exception_codes_seen": seen_codes,
+            "malformed_answers": malformed,
             "checks": checks,
             "responses": detail}
+
+
+def run_attack(on_stage: Optional[Callable] = None,
+               log_dir: Optional[str] = None) -> Dict:
+    """Boot ONE device and hold a Modbus/TCP conversation with it.
+
+    ONE GUEST, NOT ONE PER PROBE. This used to boot a separate device for each
+    of five probes, because the rehost answered the first request after boot
+    and nothing after it -- so `landed = all(checks)` read like a conjunction
+    while every clause was answered by a different device on its first
+    exchange. That structure could not have detected the defect it was working
+    around. It is gone: every question below is put to the same guest, in
+    order, down one connection, and the number it sustains is the result.
+    """
+    def _stage(name: str, **kw) -> None:
+        if on_stage:
+            on_stage(name, **kw)
+
+    port = int(os.environ.get("HAL_ADAM_ATTACK_PORT", "21300"), 0)
+    dev = DeviceScenario(bridge_port=port, log_dir=log_dir)
+    try:
+        if not dev.boot(on_stage or (lambda *a, **k: None)):
+            return {"booted": False, "landed": False,
+                    "modbus_round_trip": False,
+                    "sustained_round_trips": 0,
+                    "requests_attempted": SUSTAINED_N,
+                    "first_unanswered_request": None,
+                    "tx_ring_descriptors": TX_RING_DESCRIPTORS,
+                    "milestone": "M0",
+                    "checks": {"the device booted": False},
+                    "responses": {}}
+        result = converse(dev, on_stage)
+    finally:
+        dev.teardown()
+
+    # DERIVED from what this run measured, never asserted from STATUS.md. M4 is
+    # the sustained round trip above; a device that boots and talks on the
+    # console but cannot hold a conversation got no further than M3.
+    result["milestone"] = ("M4" if result["modbus_round_trip"]
+                           else "M3" if result["booted"] else "M0")
+    return result
 
 
 def main() -> int:
@@ -413,10 +624,19 @@ def main() -> int:
         print("  [%s] %s" % ("PASS" if ok else "FAIL", name))
     print()
     for label, reply in result.get("responses", {}).items():
-        print("  %-28s -> %s" % (label, reply))
+        print("  %-34s -> %s" % (label, reply))
+    print("\n  sustained round trips on one guest: %d/%d"
+          % (result.get("sustained_round_trips", 0),
+             result.get("requests_attempted", 0)))
+    print("  of those: %d carried data, %d were exceptions %s"
+          % (result.get("answers_with_data", 0),
+             result.get("answers_that_were_exceptions", 0),
+             result.get("exception_codes_seen", {})))
     print("\nRESULT: " + json.dumps(
         {k: v for k, v in result.items() if k != "transcript"}))
-    return 0 if result.get("landed") else 1
+    # Non-zero below M4, said explicitly so a later edit cannot decouple them.
+    return 0 if (result.get("landed")
+                 and result.get("milestone") == "M4") else 1
 
 
 if __name__ == "__main__":

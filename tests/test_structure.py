@@ -247,6 +247,85 @@ def test_device_mac_is_advantechs_oui():
     assert tiva_emac.DEVICE_MAC[:3] == bytes.fromhex("00d0c9")
 
 
+def test_ring_length_is_followed_off_the_descriptor_chain():
+    """The ring size is NOT a constant in this model. Both rings are chained --
+    word 3 of each descriptor is the next one's address and the last links back
+    to the first -- and following that gives 24, the firmware's own `#0x18`
+    (0x0001CC5E, 0x0001CCDC). The model shipped with a fixed scan of 16 and
+    silently stranded descriptors 16..23."""
+    from rehostry_adam6000_tm4c.peripheral_models.tiva_emac import TivaEmac
+
+    base, stride, n = 0x20020C00, 36, 24
+    ring = bytearray(stride * n)
+    for i in range(n):
+        nxt = base + ((i + 1) % n) * stride
+        ring[i * stride + 12:i * stride + 16] = nxt.to_bytes(4, "little")
+
+    class FakeBackend:
+        def read_memory(self, addr, size, count, raw=False):
+            off = addr - base
+            return bytes(ring[off:off + count])
+
+    emac = TivaEmac("emac", 0x400EC000, 0x1000)
+    emac.set_backend(FakeBackend())
+    assert emac._ring_len(base) == n
+
+
+def test_the_walk_has_a_dma_cursor_and_does_not_reuse_the_lowest_slot():
+    """A Synopsys DMA services descriptors in ring order from its own current
+    pointer. Going back to whichever slot happens to be free deadlocks against
+    the driver's `ui32Read`, which is what made this device answer five times
+    and stop."""
+    from rehostry_adam6000_tm4c.peripheral_models import tiva_emac
+    import inspect
+
+    src = inspect.getsource(tiva_emac.TivaEmac._walk)
+    assert "self._cursors" in src
+    # And the old behaviour is still reachable, as a control.
+    assert hasattr(tiva_emac.TivaEmac, "_walk_no_cursor")
+    assert tiva_emac.NO_CURSOR is False       # off unless asked for
+
+
+def test_transmit_complete_is_reported_unless_the_control_asks_otherwise():
+    """`tivaif_interrupt` (0x0001D1B2) reaches the reclaim only when DMA status
+    bit 0 is set, and `tivaif_transmit` (0x0001CC1A) refuses to send into a
+    descriptor whose pbuf was never freed. Withholding the bit does not cost
+    memory; it costs the device its transmitter."""
+    from rehostry_adam6000_tm4c.peripheral_models import tiva_emac
+    assert tiva_emac.EMAC_INT_TRANSMIT == 1
+    assert tiva_emac.STATIC_TXBUF is False    # the leak is a control, not the default
+
+
+def test_a_successful_read_must_be_sized_from_its_own_request():
+    """The structural check the oracle applies to a data answer: the byte count
+    is computed from the quantity field the request chose, so a canned or
+    replayed reply cannot satisfy it. The good case is a real capture."""
+    import struct
+    from rehostry_adam6000_tm4c.attack import _check_success, FN_READ_HOLDING
+
+    pdu = struct.pack(">BHH", FN_READ_HOLDING, 0x00CB, 8)
+    good = bytes.fromhex("b2030000001308"           # MBAP: txn, proto, len, unit
+                         "0310" + "00" * 14 + "6000")
+    assert _check_success(FN_READ_HOLDING, pdu, good) is None
+    # Same reply, but the request asked for a different number of registers.
+    other = struct.pack(">BHH", FN_READ_HOLDING, 0x00CB, 4)
+    assert _check_success(FN_READ_HOLDING, other, good) is not None
+
+
+def test_the_oracle_asks_one_guest_more_than_a_ring_of_questions():
+    """Below 24 exchanges the transmit ring need never have wrapped, so a
+    sustained result would prove nothing about reclaim."""
+    from rehostry_adam6000_tm4c import attack
+    assert attack.SUSTAINED_N > attack.TX_RING_DESCRIPTORS
+
+
+def test_every_request_in_the_sweep_differs_from_every_other():
+    """Fresh content per request is what makes a reply attributable."""
+    from rehostry_adam6000_tm4c import attack
+    seen = {attack._probe_for(i)[:3] for i in range(attack.SUSTAINED_N)}
+    assert len(seen) == attack.SUSTAINED_N
+
+
 # --- the peer's protocol arithmetic ----------------------------------------
 
 def test_checksum_matches_the_rfc_1071_worked_example():

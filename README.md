@@ -57,8 +57,10 @@ rehostry-adam6000-tm4c-panel                        # the polling web panel
 python -m rehostry_adam6000_tm4c.attack             # speak Modbus/TCP to it
 ```
 
-`attack` boots one device per probe, concurrently, and prints a check list with
-the raw exchange. All 18 checks pass on a working tree:
+`attack` boots **one** device and puts every question to it, in order, down one
+connection; it prints the check list, the raw exchanges and the count it
+sustained. On a working tree it answers every request it is given (200/200
+measured on a single guest, 200 distinct replies) and all nine checks pass:
 
 ```
 >>> 000100000006 01 01 00000008     read coils 0..7
@@ -73,7 +75,7 @@ the raw exchange. All 18 checks pass on a working tree:
 | Model | What it stands in for |
 | --- | --- |
 | `tiva_rom` | The TM4C's masked driverlib ROM at `0x01000000`, answered structurally: `APITABLE[i]` → a synthetic sub-table, sub-table entry → a distinct `bx lr` stub. Calls that must return a value are implemented in `bp_handlers/tiva_rom_api.py`; the rest return immediately. |
-| `tiva_emac` | The Synopsys DesignWare MAC and its PHY: descriptor rings, interrupt status, source-MAC insertion. Ring pitch is **36** bytes — TivaWare's lwIP port carries a `pbuf *` after the eight-word descriptor. |
+| `tiva_emac` | The Synopsys DesignWare MAC and its PHY: descriptor rings with a **per-ring DMA cursor**, transmit-complete status, interrupt status, source-MAC insertion. Ring pitch is **36** bytes — TivaWare's lwIP port carries a `pbuf *` after the eight-word descriptor — and ring length is followed off the firmware's own descriptor chain (24 each), not assumed. Three env knobs restore the defects that used to make this device answer once and go deaf; see [STATUS.md](STATUS.md). |
 | `net_peer` | An Ethernet/ARP/IPv4/TCP peer on the other end of the wire, with retransmission. Its checksums are unit-tested against RFC 1071 and verified to zero over a data-carrying segment. |
 | `spi_flash` | The serial NOR on SSI3, driven through the ROM's SSI entries. **Starts erased** — see "Known limits". |
 | `tiva_udma` | The uDMA channel pair that carries SSI3 transfers. |
@@ -83,12 +85,6 @@ the raw exchange. All 18 checks pass on a working tree:
 
 ## Known limits
 
-- **One Modbus exchange per boot.** The device answers the first request after
-  boot and does not pick up later ones, on the same connection or a fresh one.
-  Reproduced at SysTick rates of 1500/2000/3000/4000 ROM calls per tick and
-  with up to 200 retransmissions, so it is neither the clock nor frame loss;
-  the cause is not yet isolated. `attack.py` works around it by booting one
-  device per probe.
 - **The device reports no model and no I/O points**, so every Modbus address is
   illegal and every answer is exception 2. Its identity — model number, channel
   count, the whole I/O profile — lives in a serial NOR flash that the vendor

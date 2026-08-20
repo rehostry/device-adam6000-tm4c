@@ -155,10 +155,19 @@ class TivaRomApi(BPHandler):
             return                              # one delivery outstanding
         if apb is not None:
             ppb = get_ppb()
-            if apb.emac.rx_irq_pending and not (ppb and ppb.in_handler_mode()):
-                # A frame just landed: the MAC's own interrupt outranks the
-                # clock this pass. One exception per delivery (playbook §2.98).
+            if ((apb.emac.rx_irq_pending or apb.emac.tx_irq_pending)
+                    and not (ppb and ppb.in_handler_mode())):
+                # A frame just landed, or one just went out: the MAC's own
+                # interrupt outranks the clock this pass. One exception per
+                # delivery (playbook §2.98).
+                #
+                # TRANSMIT-COMPLETE HAS TO GET HERE TOO. It is not decoration:
+                # `tivaif_interrupt` runs the driver's pbuf reclaim only when it
+                # sees bit 0, and only the reclaim frees a transmit descriptor
+                # for reuse. Raise the status without ever entering the ISR and
+                # the ring still fills up and the device still goes deaf.
                 apb.emac.rx_irq_pending = False
+                apb.emac.tx_irq_pending = False
                 try:
                     qemu.inject_irq(EMAC_IRQ)
                 except Exception:                # noqa: BLE001

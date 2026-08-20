@@ -1,11 +1,13 @@
 <!-- Copyright 2026 Christopher Wright; SPDX-License-Identifier: AGPL-3.0-or-later -->
 # STATUS — device-adam6000-tm4c  (**M4**)
 
-**Milestone reached: M4 — a Modbus/TCP round-trip.** The vendor image boots its
-own bootloader, loads and runs the application, reads its (blank) serial flash,
-saves configuration to internal flash, brings up lwIP, **transmits and receives
-Ethernet frames**, completes a TCP handshake on port 502, and **answers Modbus
-requests from its own Modbus server**:
+**Milestone reached: M4 — a sustained Modbus/TCP conversation.** The vendor
+image boots its own bootloader, loads and runs the application, reads its
+(blank) serial flash, saves configuration to internal flash, brings up lwIP,
+transmits and receives Ethernet frames, completes a TCP handshake on port 502,
+and **keeps answering Modbus requests from one anonymous peer, down a single
+TCP connection, with no credential of any kind** — 40/40 in the graded run
+(`attack.py`), and 200/200 in a longer sweep of the same seam.
 
 ```
 >>> 000100000006 01 01 00000008     read coils 0..7
@@ -15,21 +17,148 @@ requests from its own Modbus server**:
 <<< 000100000003 01 c1 01           exception 1, illegal function
 ```
 
-`src/rehostry_adam6000_tm4c/attack.py` boots one device per probe and checks
-18 assertions; all pass:
+## The count, and why it is the headline
+
+**Graded: 40 out of 40 consecutive round trips on a single guest, exit 0.
+Swept: 200 out of 200, with 200 distinct replies.** Every request differed from
+every other in its transaction id, its unit id, its function code, its address
+and its quantity, and every reply carried its own request's transaction and unit
+id back — so no answer in either run could have been a buffered repeat of an
+earlier one.
+
+That number used to be **one**. Not one *per connection* — one per boot, after
+which the device was deaf to everything, and the oracle never asked.
+
+### What was wrong, and how it was found
+
+This device previously claimed M4 on an oracle that **booted a separate guest
+for each of five probes**. `landed = all(checks.values())` read like a strong
+conjunction, but each clause was answered by a different freshly-booted device
+on its *first* exchange, so the oracle was structurally incapable of noticing
+that no guest ever answered a second question. The repository documented the
+symptom as a firmware quirk — "One Modbus exchange per boot" — and worked
+around it.
+
+It was not a firmware quirk. It was **three defects in the MAC model**, each of
+which alone silences the device, and each of which now has a switch that puts
+it back:
+
+| Defect | What it did | Where it stops | Knob that restores it |
+| --- | --- | --- | --- |
+| Fixed 16-descriptor ring scan | Descriptors 16..23 of a 24-entry ring were never serviced; the firmware handed them to a DMA engine that never looked | after exactly **16** transmitted frames | `HAL_ADAM_EMAC_RING_LEN=16` |
+| Transmit-complete never raised | The driver's only reclaim path is gated on it, so no pbuf and no descriptor slot was ever freed | after one lap of the ring | `HAL_ADAM_STATIC_TXBUF=1` |
+| No DMA cursor on the rings | The model used whichever slot was free rather than the next one in ring order, so it and the driver walked the same ring in different places | after **5** exchanges | `HAL_ADAM_EMAC_NO_CURSOR=1` |
+
+Measured by the graded oracle, one guest, fresh content per request
+(`runs-on-9bde2c0/adam6000-tm4c.control.run`):
 
 ```
-[PASS] answered / exception echoes the function / exception code 2   (fc 01,02,03,05)
-[PASS] answered / exception echoes the function / exception code 1   (fc 0x41)
-[PASS] a real parser: unsupported and unusable differ
-[PASS] every address is illegal, and the device says why
-[PASS] the stack is the firmware's own
+default (all three fixed)                40/40   exit 0   landed
+HAL_ADAM_EMAC_RING_LEN=16                 1/40   exit 1   <- the published behaviour, exactly
+HAL_ADAM_STATIC_TXBUF=1                   2/40   exit 1
+HAL_ADAM_EMAC_NO_CURSOR=1                 5/40   exit 1
 ```
 
-**Why every answer is an exception, and why that is still evidence.** This
-module keeps its identity — model number, channel count, the whole I/O profile
-— in a serial NOR flash beside the microcontroller, and that flash is not part
-of the distributed firmware image. The device boots and says so:
+Restoring the fixed 16-descriptor scan alone reproduces the *one request per
+boot* the repository used to describe as a property of the firmware. It was
+never the firmware.
+
+**The reclaim.** The old model left transmit-complete unasserted on purpose and
+said why: *"transmit buffers are not reclaimed, which for a short session costs
+memory and nothing else."* That is false, and the firmware says so.
+`tivaif_transmit` refuses to send at all when the descriptor it is about to
+write still carries a pbuf:
+
+```
+1cc0e:  ldr   r1, [r0]          ; pTxDescList->pDescriptors
+1cc10:  ldr   r0, [r0, #0xc]    ; ->ui32Write
+1cc12:  mul   r0, r8, r0        ; * 0x24  (36 bytes per descriptor)
+1cc1a:  ldr   r0, [sb, #0x20]   ; pDescriptors[write].pBuf
+1cc1e:  cmp   r0, #0
+1cc22:  beq   0x1cc4c           ; free      -> go on
+1cc24:  bl    pbuf_free         ; NOT free  -> drop the frame, return -1
+```
+
+and it sizes the run of free descriptors from `ui32Read`, which only the
+reclaim advances (`rsb r1, r1, #0x18` at `0x0001CC5E` — 24 is the firmware's
+own transmit-ring size, and the same constant appears at `0x0001CCDC`). `pBuf`
+is cleared in exactly one place, `tivaif_process_transmit` at `0x0001CD6A`, and
+`tivaif_interrupt` reaches it only when bit 0 of the DMA status word is set:
+
+```
+1d1b2:  lsls  r0, r5, #0x1f     ; bit 0 == EMAC_INT_TRANSMIT
+1d1b4:  bpl   0x1d1c2           ; clear -> skip the reclaim entirely
+1d1be:  bl    0x1cd6a           ; tivaif_process_transmit
+```
+
+So withholding the bit does not cost memory. It costs the device its
+transmitter, one ring-lap after boot.
+
+**The cursor** was the deepest of the three and the last to fall. A Synopsys
+DMA holds a current-descriptor pointer per ring: it services that descriptor,
+moves to the next, wraps, and **never goes back to pick whichever slot happens
+to be free**. The model did exactly that, and it deadlocked against the
+driver's own read index:
+
+* the driver reads at `ui32Read` and stops the moment that descriptor is still
+  DMA-owned — `cmp r0,#0; bmi <exit>` at `0x0001CE26`;
+* the model delivered three frames into descriptors 0, 1, 2; the driver
+  consumed all three, re-armed them, and left `ui32Read` at 3;
+* the next frame went to descriptor 0, because that was the lowest slot the
+  "DMA" owned again. The driver looked at descriptor 3, found it armed and
+  empty, and stopped — permanently.
+
+The instrumentation that settled it (`HAL_ADAM_EMAC_DEBUG=1`, still in the
+model) prints the descriptors *and* the driver's own indices side by side:
+
+```
+DBG ring 0x20020f60 own=000000000000001111111111 pbuf=1111...  list@0x20000264 n=24 rd=3 wr=0
+DBG ring 0x20020c00 own=000000000000000000000000 pbuf=0000...  list@0x20000254 n=24 rd=5 wr=5
+```
+
+`rd=3`, frozen, while the model kept consuming descriptors 4, 5, 6 …. The
+transmit ring beside it (`rd=5 wr=5`, every `pBuf` cleared) is the reclaim fix
+working. Reading the owner bits alone would have shown drift and explained
+nothing; it is the driver's indices next to them that name the fault.
+
+**Ring length is now measured, not assumed.** Both rings are built in chained
+mode, so word 3 of each descriptor is the address of the next and the last
+links back to the first. Following that chain gives 24 for both rings, which
+agrees with the firmware's own `#0x18`:
+
+```
+EMAC: ring at 0x20020f60 is 24 descriptors (followed the firmware's own chain, 36 bytes apart)
+EMAC: ring at 0x20020c00 is 24 descriptors (followed the firmware's own chain, 36 bytes apart)
+```
+
+## The oracle
+
+`src/rehostry_adam6000_tm4c/attack.py` boots **one** device and puts every
+question to it, in order, down one connection. Every request differs from every
+other in transaction id, unit id, function code, address and quantity; every
+reply must carry its own request's transaction and unit id back and echo its
+function byte (plain when the device answers, with the error bit when it
+refuses); and a successful answer must be **sized from the quantity field that
+request chose** — a check no canned or replayed reply can pass. The count it
+sustained is in the `RESULT:` line, `landed` is a conjunction containing the
+seam field, and `main()` exits non-zero below M4.
+
+The controls are the point. Each knob restores one defect and nothing else:
+
+```
+default                        40/40   landed
+HAL_ADAM_STATIC_TXBUF=1         2/40   not landed   (reclaim gone)
+HAL_ADAM_EMAC_NO_CURSOR=1       5/40   not landed   (cursor gone)
+HAL_ADAM_EMAC_RING_LEN=16       1/40   not landed   (fixed scan back)
+```
+
+A run that cannot be made to fail proves nothing; these can.
+
+## Why nearly every answer is an exception, and why that is still evidence
+
+This module keeps its identity — model number, channel count, the whole I/O
+profile — in a serial NOR flash beside the microcontroller, and that flash is
+not part of the distributed firmware image. The device boots and says so:
 
 ```
  Boot_ SFinit() ff,ff,ff,ff,...
@@ -40,9 +169,11 @@ of the distributed firmware image. The device boots and says so:
 g_usModel = 255
 ```
 
-A module with no I/O points has no legal data address, so every read is
-exception 2. Filling that flash with invented vendor data would produce
-prettier output and would be a fabrication.
+A module with no I/O points has almost no legal data address, so nearly every
+read is exception 2 — 31 of the 40 graded exchanges, with the 8 negative
+controls making up the rest and exactly one address answering with data.
+Filling that flash with invented vendor data would produce prettier output and
+would be a fabrication.
 
 What makes it evidence anyway is the **discrimination**: a supported function
 code aimed at an unusable address is refused as *illegal data address* (2),
@@ -64,7 +195,7 @@ EMAC TX #6: 63 bytes
   000100000003 01 81 02                     <- the Modbus response
 ```
 
-And the firmware genuinely parses the request rather than emitting a constant.
+And the firmware genuinely parses each request rather than emitting a constant.
 Both MBAP fields track across values, and the exception code still
 discriminates by function:
 
@@ -76,19 +207,33 @@ discriminates by function:
 
 The firmware carried both header fields through, recomputed the length, OR'd
 the function byte, and chose the exception code from its own dispatch table.
-No host code could have synthesised that.
+No host code could have synthesised that — and it did it two hundred times in
+a row, which no buffered reply could have.
 
 **Does not.** What round-trips is the **protocol** layer — MBAP framing and
 function dispatch — not the **application** layer:
 
-- **No Modbus data handler is ever reached.** Address validation rejects first,
-  so the coil and register read/write code — what an ADAM-6050 is actually for
-  — is entirely unexercised.
+- **Almost no Modbus data handler is reached.** Address validation rejects
+  first for nearly everything. *Nearly*: sweeping addresses across the graded
+  run found one that is legal, and the firmware answered it with data —
+
+  ```
+  >>> b203 0000 0006 08  03 00cb 0008      read 8 holding registers at 203
+  <<< b203 0000 0013 08  03 10 0000 0000 0000 0000 0000 0000 0000 6000
+  ```
+
+  a byte count of 0x10 = 16 = 2 x 8, **sized from the quantity field this run
+  chose**, followed by sixteen bytes out of the firmware's own register map.
+  That is the data handler, not the dispatcher. It is one address out of forty
+  probes and it is not what an ADAM-6050 is *for* — the coil space is still
+  entirely rejected — but the earlier flat claim that no data handler is ever
+  reached was wrong, and this run disproves it.
 - **The attack does not land a physical action.** Modbus/TCP's lack of
   authentication is real and is why this device is worth rehosting, but this
   rehost demonstrates reaching the parser, not driving a relay.
-- **This is a weaker M4 than device-bmxnoe**, whose M4 was FC03 returning real
-  register data. The gap is entirely the blank serial flash.
+- **This is still a weaker M4 than device-bmxnoe**, whose M4 was FC03 returning
+  register data across the map rather than at a single address. The gap is
+  entirely the blank serial flash.
 
 Closing that gap needs the serial NOR contents from a real module. Everything
 above it already works.
@@ -145,13 +290,14 @@ watchpoint and a pointer-chain probe found it.
 
 ## Known limits
 
-- **One Modbus exchange per boot.** The device answers the first request after
-  boot and does not pick up later ones, on the same connection or a new one.
-  Reproduced at SysTick rates of 1500/2000/3000/4000 ROM calls per tick and
-  with up to 200 retransmissions, so it is not the clock and not frame loss.
-  `run_attack` works around it by booting one device per probe.
-- **No I/O points**, for the serial-flash reason above.
+- **No I/O points**, for the serial-flash reason above — so the coil space is
+  refused wholesale and only one holding-register address answers with data.
 - The web panel renders device state as JSON rather than a coil grid.
+- Two walls still block the **provisioned** path (the derived device profile);
+  the default path is what is graded here.
+- **The graded sweep is 40 requests, not an endurance test.** 200 was measured
+  separately over the same seam and held, but nothing here establishes a bound;
+  a longer run could still find one. Set `HAL_ADAM_SUSTAINED_N` to raise it.
 
 ## What is established (and checked by `tools/extract_firmware.py`)
 
@@ -174,43 +320,10 @@ there is no FreeRTOS string anywhere) + lwIP + an HTTP server with an embedded
 web UI + Modbus/TCP + SNMP + mbedTLS 3.6.0 + an Azure IoT client. The vendor's
 own build path survives: `D:\ADAM-6000DIO_V615\Code\Lib\mbedtls-3.6.0\...`.
 
-## The gates, in the order they will be met
-
-1. **SYSCTL / PLL.** `PLLSTAT.LOCK` is polled with a timeout at `0x0000B036`.
-   Currently answered by the catch-all's busy-wait breaker, which happens to
-   work; it wants a real model.
-2. **The TM4C masked ROM — the one that changes the shape of this device.**
-   The firmware calls TivaWare driverlib through the on-chip **ROM API table at
-   `0x01000010`**, and there is no ROM image to supply: the table lives in
-   masked ROM on real silicon. At `0x00006EAC` it does
-   `r4 = 0x01000014; r1 = [r4+0x30]; r1 = [r1+0x18]; blx r1` — a two-level
-   dispatch through that table. Left unmapped this aborts the run outright;
-   mapped as a probe region, **exactly one table entry is fetched so far**
-   (`0x01000044`), which suggests the dependency may be small enough to
-   synthesise rather than emulate wholesale.
-   The approach that fits: map `0x01000000` as a model that returns *synthesised*
-   pointers into a stub region, log which table index each call fetches, and
-   implement only the entries the firmware actually uses as bp_handlers. The
-   call sites identify themselves — the one above sits next to `0x4000C000`
-   (UART0), so it is a UART routine.
-3. **The current stall.** After startup the CPU vectors to `0x0000F0C0`, which
-   is the *shared* default handler for MemManage/BusFault/UsageFault/SVCall/
-   DebugMon/PendSV — and is a `b .` spin. It is **not** HardFault (that vector
-   is `0x0000F0BE`), nothing in the image branches there, and the literal
-   `0x0000F0C1` appears only in the vector table, so it is a genuine exception
-   entry. Two hypotheses tested and **both wrong**: it is not an unmapped access
-   (none is logged), and it is not SVCall (forcing the core's `skip_svc` changes
-   nothing). Next step is to read `CFSR`/`HFSR` at the moment of entry — model
-   the PPB and log the fault status registers rather than guessing again.
-4. **EMAC0 + descriptors**, then lwIP, then a host-side ARP/IP/TCP peer to carry
-   Modbus/TCP for M4. The 802.15.4 peer in `device-openthread-nrf52840` is the
-   shape to copy, one layer up the stack.
-
 ## Honest scope note
 
-This device is materially larger than the three before it: it needs a
-synthesised TivaWare ROM layer, a clock tree, an Ethernet MAC with DMA
-descriptors, and a host-side TCP peer before a Modbus/TCP round-trip is
-possible. M1 is real and the groundwork is verified, but M4 is a session of its
-own. Nothing here is published — the repo is local until it earns a milestone
-worth shipping.
+This device needed a synthesised TivaWare ROM layer, a clock tree, an Ethernet
+MAC with DMA descriptor rings, and a host-side TCP peer before a Modbus/TCP
+round-trip was possible. The round trip is real and is the firmware's own; what
+took a second pass was proving it could be repeated, which is the difference
+between a device that works and a device that answered once.
