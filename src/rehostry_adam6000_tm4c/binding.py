@@ -21,11 +21,12 @@ from . import paths, spawn
 # plugin hook would advertise).
 DEVICE = {
     "name": "adam6000-tm4c",
-    "uart_seam": spawn.UART_SEAM,           # TODO: your seam id
+    "uart_seam": spawn.UART_SEAM,
     "config_files": paths.CONFIG_FILES,
     "bridge_config": paths.BRIDGE_CONFIG,
     "bridge_port": spawn.BRIDGE_PORT,        # host TCP server, if any
-    "telemetry": "TODO: one-line description of the host-facing seam",
+    "telemetry": "Modbus/TCP carried on Ethernet frames bridged in and out of "
+                 "the EMAC0 model to a host-side network peer",
 }
 
 
