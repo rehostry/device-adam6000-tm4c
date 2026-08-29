@@ -36,64 +36,106 @@ from . import attack, spawn
 
 _LOCK = threading.Lock()
 _STATE = {"busy": False, "ready": False, "stage": "idle", "log": [],
-          "state": None, "attack": None}
+          "state": None, "attack": None, "run_id": 0}
 _SC = {"scenario": None}
+#: Run generation, published as ``run_id``.
+#:
+#: ``/state`` must never hand a poller a verdict that belongs to an EARLIER run.
+#: :meth:`Handler.do_POST` bumps this and clears ``attack`` inside the SAME
+#: ``_LOCK`` acquisition that accepts the POST, and every worker write is gated
+#: on ``run_id == _GEN`` so a superseded run cannot post its result over a newer
+#: one's.
+_GEN = 0
 ARGS: argparse.Namespace
 
 
-def _on_stage(name, **data):
+def _make_on_stage(run_id):
+    """Stage callback bound to ONE run: a late callback from a superseded run
+    must not write into the current run's stage/log/state/verdict panes."""
+    def _on_stage(name, **data):
+        with _LOCK:
+            if run_id != _GEN:
+                return
+            _STATE["stage"] = name
+            if data.get("note"):
+                _STATE["log"].append({"stage": name, "note": data["note"]})
+                _STATE["log"] = _STATE["log"][-60:]
+            if "state" in data:
+                _STATE["state"] = data["state"]
+            if "result" in data:
+                _STATE["attack"] = data["result"]
+    return _on_stage
+
+
+def _finish(run_id):
+    """Clear ``busy`` only if this run is still the current one."""
     with _LOCK:
-        _STATE["stage"] = name
-        if data.get("note"):
-            _STATE["log"].append({"stage": name, "note": data["note"]})
-            _STATE["log"] = _STATE["log"][-60:]
-        if "state" in data:
-            _STATE["state"] = data["state"]
-        if "result" in data:
-            _STATE["attack"] = data["result"]
-
-
-def _boot():
-    sc = attack.DeviceScenario(bridge_port=ARGS.port, log_dir=ARGS.log_dir)
-    _SC["scenario"] = sc
-    try:
-        with _LOCK:
-            _STATE.update(busy=True, ready=False, stage="booting", log=[],
-                          state=None, attack=None)
-        if not sc.boot(_on_stage):
-            return
-        _on_stage("read", state=sc.read_state())
-        with _LOCK:
-            _STATE["ready"] = True
-        _on_stage("ready", note="firmware live -- read the state or run the attack")
-    except Exception as exc:  # noqa: BLE001
-        _on_stage("error", note="error: %s" % exc)
-    finally:
-        with _LOCK:
+        if run_id == _GEN:
             _STATE["busy"] = False
 
 
-def _refresh():
-    sc = _SC["scenario"]
-    if sc:
-        _on_stage("read", state=sc.read_state())
+def _boot(run_id):
+    on_stage = _make_on_stage(run_id)
+    sc = attack.DeviceScenario(bridge_port=ARGS.port, log_dir=ARGS.log_dir)
+    _SC["scenario"] = sc
+    try:
+        # busy/stage/run_id and the cleared panes were already published by
+        # do_POST under _LOCK; this thread only fills in the result.
+        if not sc.boot(on_stage):
+            return
+        on_stage("read", state=sc.read_state())
+        with _LOCK:
+            if run_id != _GEN:
+                return
+            _STATE["ready"] = True
+        on_stage("ready", note="firmware live -- read the state or run the attack")
+    except Exception as exc:  # noqa: BLE001
+        on_stage("error", note="error: %s" % exc)
+    finally:
+        _finish(run_id)
 
 
-def _attack():
-    sc = _SC["scenario"]
-    if sc:
-        _on_stage("attack", result=sc.attack())
-        _on_stage("read", state=sc.read_state())
+def _refresh(run_id):
+    on_stage = _make_on_stage(run_id)
+    try:
+        sc = _SC["scenario"]
+        if sc:
+            on_stage("read", state=sc.read_state())
+    except Exception as exc:  # noqa: BLE001
+        on_stage("error", note="error: %s" % exc)
+    finally:
+        _finish(run_id)
 
 
-def _shutdown_scenario():
-    sc = _SC["scenario"]
-    if sc:
-        sc.shutdown()
-        _SC["scenario"] = None
-    with _LOCK:
-        _STATE.update(ready=False, stage="stopped")
-    _on_stage("stopped", note="firmware stopped")
+def _attack(run_id):
+    on_stage = _make_on_stage(run_id)
+    try:
+        sc = _SC["scenario"]
+        if sc:
+            on_stage("attack", result=sc.attack())
+            on_stage("read", state=sc.read_state())
+    except Exception as exc:  # noqa: BLE001
+        on_stage("error", note="error: %s" % exc)
+    finally:
+        _finish(run_id)
+
+
+def _shutdown_scenario(run_id=None):
+    on_stage = _make_on_stage(run_id) if run_id is not None else None
+    try:
+        sc = _SC["scenario"]
+        if sc:
+            sc.shutdown()
+            _SC["scenario"] = None
+        with _LOCK:
+            if run_id is not None and run_id != _GEN:
+                return
+            _STATE.update(ready=False, stage="stopped")
+        if on_stage:
+            on_stage("stopped", note="firmware stopped")
+    finally:
+        if run_id is not None:
+            _finish(run_id)
 
 
 # The STATE card renders whatever `attack.DeviceScenario.read_state` returns.
@@ -178,7 +220,14 @@ function render(s){
   log.innerHTML=(s.log||[]).map(l=>'<b>'+l.stage+'</b> '+(l.note||'')).join('<br>')||'ready.';
   log.scrollTop=log.scrollHeight;
 }
-function post(p){fetch(p,{method:'POST'}).then(()=>setTimeout(poll,300));}
+// A control POST that arrives while a run is in flight is REFUSED with 409 --
+// never silently dropped and answered 200. Surface it, so the operator sees the
+// click did not start a run rather than reading the previous run's verdict.
+function post(p){fetch(p,{method:'POST'}).then(r=>r.json().catch(()=>({})).then(j=>{
+  if(r.status===409){const l=document.getElementById('log');
+    l.innerHTML+='<br><b>refused</b> 409 busy'+(j.reason?' ('+j.reason+')':'');
+    l.scrollTop=l.scrollHeight;}
+  setTimeout(poll,300);}));}
 function poll(){fetch('/state').then(r=>r.json()).then(render).catch(()=>{});}
 poll(); setInterval(poll, 1500);
 </script></body></html>"""
@@ -215,24 +264,60 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, "text/plain", b"not found")
 
     def do_POST(self):  # noqa: N802
-        with _LOCK:
-            busy = _STATE["busy"]
-            ready = _STATE["ready"]
-        if self.path.startswith("/boot"):
-            if not busy and not ready:
-                threading.Thread(target=_boot, daemon=True).start()
-        elif self.path.startswith("/refresh"):
-            if ready and not busy:
-                threading.Thread(target=_refresh, daemon=True).start()
-        elif self.path.startswith("/attack"):
-            if ready and not busy:
-                threading.Thread(target=_attack, daemon=True).start()
-        elif self.path.startswith("/stop"):
-            threading.Thread(target=_shutdown_scenario, daemon=True).start()
-        else:
+        global _GEN
+        path = self.path.split("?", 1)[0]
+        worker = {"/boot": _boot, "/refresh": _refresh,
+                  "/attack": _attack, "/stop": _shutdown_scenario}.get(path)
+        if worker is None:
             self._send(404, "text/plain", b"not found")
             return
-        self._send(200, "application/json", b'{"ok":true}')
+
+        # ACCEPTING the POST and SUPERSEDING the previous run are ONE atomic
+        # step, under the same lock `/state` reads.
+        #
+        # The shape this replaces read `busy`, released the lock, dropped the
+        # POST if a run was in flight, and STILL answered 200. `/state` then
+        # kept serving the PREVIOUS run's `attack` verdict for the rest of the
+        # run -- the same object, so a byte-identical nonce -- and a caller that
+        # POSTs a control arm and polls `/state` credits that stale
+        # `landed: true` to the POST it just made.
+        #
+        # So: a POST that cannot run now is REFUSED (409), never silently
+        # dropped; and a POST that is accepted clears the previous run's
+        # verdict before this method returns.
+        with _LOCK:
+            if _STATE["busy"]:
+                self._send(409, "application/json",
+                           json.dumps({"ok": False, "busy": True,
+                                       "stage": _STATE["stage"],
+                                       "run_id": _STATE["run_id"]}).encode())
+                return
+            ready = _STATE["ready"]
+            if path == "/boot" and ready:
+                self._send(409, "application/json",
+                           json.dumps({"ok": False, "reason": "already booted",
+                                       "run_id": _STATE["run_id"]}).encode())
+                return
+            if path in ("/refresh", "/attack") and not ready:
+                self._send(409, "application/json",
+                           json.dumps({"ok": False, "reason": "not ready",
+                                       "run_id": _STATE["run_id"]}).encode())
+                return
+            _GEN += 1
+            run_id = _GEN
+            _STATE.update(busy=True, stage="accepted", run_id=run_id,
+                          attack=None)
+            if path == "/boot":
+                _STATE.update(ready=False, log=[], state=None)
+            try:
+                threading.Thread(target=worker, args=(run_id,),
+                                 daemon=True).start()
+            except Exception:  # noqa: BLE001
+                # never strand the panel in a permanent busy state
+                _STATE.update(busy=False, stage="error")
+                raise
+        self._send(200, "application/json",
+                   json.dumps({"ok": True, "run_id": run_id}).encode())
 
 
 def main(argv=None) -> int:
