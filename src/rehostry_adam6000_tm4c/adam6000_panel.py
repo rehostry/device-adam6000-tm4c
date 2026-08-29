@@ -32,7 +32,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import attack
+from . import attack, spawn
 
 _LOCK = threading.Lock()
 _STATE = {"busy": False, "ready": False, "stage": "idle", "log": [],
@@ -239,10 +239,12 @@ def main(argv=None) -> int:
     global ARGS
     p = argparse.ArgumentParser(description="Live web panel for the adam6000-tm4c re-host + attack")
     p.add_argument("--port", type=int,
-                   default=int(os.environ.get("adam6000-tm4c_HTTP_PORT", "8770")),
-                   help="panel HTTP port (default from adam6000-tm4c_HTTP_PORT, else 8770)")
-    p.add_argument("--bridge-port", type=int, default=1502, dest="port_bridge",
-                   help="firmware host-bridge TCP port")
+                   default=int(os.environ.get("ADAM6000_TM4C_HTTP_PORT", "29264")),
+                   help="panel HTTP port (default from ADAM6000_TM4C_HTTP_PORT, else 29264)")
+    p.add_argument("--bridge-port", type=int, default=spawn.BRIDGE_PORT,
+                   dest="port_bridge",
+                   help="firmware host-bridge TCP port (default %d)"
+                        % spawn.BRIDGE_PORT)
     p.add_argument("--log-dir", default="/tmp", help="where to write the emulator boot log")
     p.add_argument("--no-open", action="store_true", help="don't open a browser")
     args = p.parse_args(argv)
