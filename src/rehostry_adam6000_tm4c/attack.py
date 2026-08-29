@@ -41,9 +41,21 @@ and must always come back as an exception with code 1 (illegal function), while
 a supported function aimed at an address this module does not have must come
 back as code 2 (illegal data address). A rehost that echoed bytes, or a bridge
 answering on the firmware's behalf, would not tell those apart.
+
+THE FALSIFICATION KNOB. Both controls above run *inside* every attack arm, so
+neither is something a reader can turn off from outside and watch the verdict
+collapse. ``--control=withhold`` is that external knob: the device boots
+identically, lwIP reaches "IP ready." identically, the harness attaches to the
+bridge identically -- and then the Modbus request frames, the one stimulus the
+whole verdict rests on, are never put on the wire. The socket is read anyway,
+so an emulator or a bridge that had learned to answer on the firmware's behalf
+would still be caught producing replies to questions nobody asked. Under the
+knob `sustained_round_trips` must be 0, `landed` false, the milestone M3, and
+the process must exit non-zero.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import socket
@@ -70,6 +82,13 @@ COIL_OFF = 0x0000
 
 # The output coil the attack drives. An ADAM-6050 has six outputs (DO0..DO5).
 TARGET_COIL = int(os.environ.get("HAL_ADAM_TARGET_COIL", "0"), 0)
+
+# The external falsification knob. An UNRECOGNISED value must never fall
+# through to the real attack -- a mistyped control that quietly runs the live
+# path reads as "the control does not discriminate", which is damning and false
+# (playbook §2.200). `CONTROL_MODES` is the whole authority; anything else
+# raises, and argparse `choices=` refuses it at the command line.
+CONTROL_MODES = ("none", "withhold")
 
 
 def mbap(txn: int, pdu: bytes, unit: int = MODBUS_UNIT) -> bytes:
@@ -263,6 +282,37 @@ class DeviceScenario:
         self.transcript.append({"sent": frame.hex(), "recv": bytes(buf).hex()})
         return bytes(buf) if len(buf) >= 8 else None
 
+    def listen_only(self, timeout: float = 8.0) -> Optional[bytes]:
+        """The withheld-stimulus arm of `exchange`: read, but never send.
+
+        Everything else is identical -- same socket, same booted guest, same
+        completion rule on the MBAP length field. The ONLY difference is that
+        no request frame is transmitted. Anything that comes back here is a
+        reply to a question nobody asked, so the read is kept rather than
+        skipped: it is what would catch a bridge answering on the firmware's
+        behalf.
+        """
+        assert self.sock is not None
+        buf = bytearray()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self.sock.settimeout(max(0.5, deadline - time.time()))
+            try:
+                data = self.sock.recv(512)
+            except socket.timeout:
+                break
+            except OSError:
+                break
+            if not data:
+                break
+            buf.extend(data)
+            if len(buf) >= 6:
+                need = 6 + struct.unpack(">H", bytes(buf[4:6]))[0]
+                if len(buf) >= need:
+                    break
+        self.transcript.append({"sent": "", "recv": bytes(buf).hex()})
+        return bytes(buf) if len(buf) >= 8 else None
+
     def read_coils(self, start: int, count: int) -> Optional[List[int]]:
         pdu = self.request(struct.pack(">BHH", FN_READ_COILS, start, count))
         if not pdu or pdu[0] != FN_READ_COILS or len(pdu) < 2:
@@ -428,12 +478,27 @@ def _check_success(fc: int, request_pdu: bytes,
 
 
 def converse(dev: "DeviceScenario", on_stage: Optional[Callable] = None,
-             count: int = SUSTAINED_N) -> Dict:
+             count: int = SUSTAINED_N, control: str = "none") -> Dict:
     """Ask ONE booted guest ``count`` questions down one connection.
 
     Returns the graded result. `run_attack` and the panel both go through here,
     so there is one oracle and not two.
+
+    ``control``:
+      ``"none"``     the real attack.
+      ``"withhold"`` the external falsification control: the request frames are
+                     never transmitted. The guest is booted, the socket is open
+                     and is still read -- only the stimulus is withheld. Must
+                     yield ``booted: true`` with ``landed: false``.
+
+    The oracle below is UNCHANGED between the two arms: the same checks are
+    evaluated on whatever came back. A control that scored itself with a
+    different predicate would not be a control.
     """
+    if control not in CONTROL_MODES:
+        raise ValueError("unknown control mode %r; expected one of %s"
+                         % (control, ", ".join(CONTROL_MODES)))
+
     def _stage(name: str, **kw) -> None:
         if on_stage:
             on_stage(name, **kw)
@@ -452,12 +517,24 @@ def converse(dev: "DeviceScenario", on_stage: Optional[Callable] = None,
     exceptions = 0
     previous: Optional[bytes] = None
 
-    _stage("request", note="%d unauthenticated Modbus requests down one "
-                           "connection to one guest -- no credential, no "
-                           "session, no handshake beyond TCP" % count)
+    if control == "withhold":
+        _stage("request", note="CONTROL: the %d Modbus requests are NOT "
+                               "transmitted; the socket is read anyway, so a "
+                               "reply to a question nobody asked would still "
+                               "be caught" % count)
+    else:
+        _stage("request", note="%d unauthenticated Modbus requests down one "
+                               "connection to one guest -- no credential, no "
+                               "session, no handshake beyond TCP" % count)
     for i in range(count):
         txn, unit, pdu, _want_fc, want_code, label = _probe_for(i)
-        adu = dev.exchange(txn, unit, pdu)
+        if control == "withhold":
+            # The withheld stimulus, and NOTHING else: same guest, same open
+            # socket, same completion rule -- the request bytes simply never
+            # leave the host.
+            adu = dev.listen_only()
+        else:
+            adu = dev.exchange(txn, unit, pdu)
         if adu is None or len(adu) < 9:
             first_miss = i
             detail["request %02d %s" % (i, label)] = "<nothing>"
@@ -559,6 +636,7 @@ def converse(dev: "DeviceScenario", on_stage: Optional[Callable] = None,
                               "none" if first_miss is None else first_miss))
     return {"booted": "IP ready." in console,
             "landed": all(checks.values()),
+            "control_mode": control,
             "modbus_round_trip": modbus_round_trip,
             # THE COUNT, in the result itself.
             "sustained_round_trips": ok_streak,
@@ -574,7 +652,8 @@ def converse(dev: "DeviceScenario", on_stage: Optional[Callable] = None,
 
 
 def run_attack(on_stage: Optional[Callable] = None,
-               log_dir: Optional[str] = None) -> Dict:
+               log_dir: Optional[str] = None,
+               control: str = "none") -> Dict:
     """Boot ONE device and hold a Modbus/TCP conversation with it.
 
     ONE GUEST, NOT ONE PER PROBE. This used to boot a separate device for each
@@ -585,6 +664,10 @@ def run_attack(on_stage: Optional[Callable] = None,
     around. It is gone: every question below is put to the same guest, in
     order, down one connection, and the number it sustains is the result.
     """
+    if control not in CONTROL_MODES:
+        raise ValueError("unknown control mode %r; expected one of %s"
+                         % (control, ", ".join(CONTROL_MODES)))
+
     def _stage(name: str, **kw) -> None:
         if on_stage:
             on_stage(name, **kw)
@@ -594,6 +677,7 @@ def run_attack(on_stage: Optional[Callable] = None,
     try:
         if not dev.boot(on_stage or (lambda *a, **k: None)):
             return {"booted": False, "landed": False,
+                    "control_mode": control,
                     "modbus_round_trip": False,
                     "sustained_round_trips": 0,
                     "requests_attempted": SUSTAINED_N,
@@ -602,7 +686,7 @@ def run_attack(on_stage: Optional[Callable] = None,
                     "milestone": "M0",
                     "checks": {"the device booted": False},
                     "responses": {}}
-        result = converse(dev, on_stage)
+        result = converse(dev, on_stage, control=control)
     finally:
         dev.teardown()
 
@@ -614,11 +698,30 @@ def run_attack(on_stage: Optional[Callable] = None,
     return result
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="rehostry-adam6000-tm4c-attack",
+        description="Unauthenticated Modbus/TCP against the ADAM-6050 rehost; "
+                    "verified from the firmware's own replies.")
+    p.add_argument("--control", default="none", choices=CONTROL_MODES,
+                   help="'none' = the real attack; 'withhold' = the "
+                        "falsification control (the Modbus request frames are "
+                        "never transmitted; everything else is identical)")
+    p.add_argument("--log-dir", default=None)
+    # Reject unknown argv rather than ignoring it. This main() used to take no
+    # argv at all, so a documented-looking flag was silently dropped and the
+    # REAL attack ran and was reported as a control (playbook §2.200).
+    args = p.parse_args(argv)
+
     def on_stage(name: str, **kw) -> None:
         print("[%s] %s" % (name, kw.get("note", "")), file=sys.stderr)
 
-    result = run_attack(on_stage=on_stage)
+    print("[mode] control=%r (%s)"
+          % (args.control,
+             "REAL ATTACK" if args.control == "none" else "NEGATIVE CONTROL"),
+          file=sys.stderr)
+    result = run_attack(on_stage=on_stage, log_dir=args.log_dir,
+                        control=args.control)
     print()
     for name, ok in result.get("checks", {}).items():
         print("  [%s] %s" % ("PASS" if ok else "FAIL", name))
