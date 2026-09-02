@@ -42,7 +42,7 @@ from typing import Any, Dict, List, Optional
 
 from halucinator import hal_log
 
-from .net_peer import get_peer
+from .net_peer import all_peers, get_peer
 from .soc_catchall import SocCatchAll
 
 log = hal_log.getHalLogger()
@@ -211,8 +211,12 @@ class TivaEmac(SocCatchAll):
         self.int_status = 0
         self.stride = descriptor_stride()
         self._dumped = False
-        # The other machine on the wire. Frames the firmware transmits are
-        # handed to it, and whatever it answers is queued for receive.
+        # The other machines on the wire. Frames the firmware transmits are
+        # handed to every one of them, and whatever any of them answers is
+        # queued for receive. Each peer filters on its own MAC and IP, so a
+        # frame addressed to one is ignored by the other exactly as a real NIC
+        # would ignore it -- which is what lets two of the device's servers be
+        # driven by two different machines at the same time.
         self.mac = DEVICE_MAC
         self.peer = get_peer()
         self.peer.set_send(self.deliver)
@@ -502,7 +506,13 @@ class TivaEmac(SocCatchAll):
             if self.tx_count <= 24:
                 log.info("EMAC TX #%d: %d bytes %s", self.tx_count, len(frame),
                          frame[:TX_LOG_BYTES].hex())
-            self.peer.on_device_frame(frame)
+            # FAN OUT TO EVERY MODELLED MACHINE, not just the first one.
+            # Peers can be registered after this model is built (the bridge
+            # creates the HTTP one when it starts), so the transmit path is
+            # attached lazily here rather than assumed at construction.
+            for peer in all_peers():
+                peer.ensure_send(self.deliver)
+                peer.on_device_frame(frame)
         # Give the descriptor back to the CPU, which is what the DMA does when
         # the frame is on the wire, and raise the transmit-complete status the
         # driver reads in its ISR.

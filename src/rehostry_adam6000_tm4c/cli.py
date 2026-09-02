@@ -106,8 +106,43 @@ def main(argv=None) -> int:
                    help="bridge TCP port (default %d)" % spawn.BRIDGE_PORT)
     r.set_defaults(func=cmd_run)
 
+    lad = sub.add_parser(
+        "ladder",
+        help="run the graded attack and print the rung it derives")
+    lad.add_argument("--control", default="none",
+                     help="'none' = the real attack; 'withhold' = the "
+                          "falsification control")
+    lad.add_argument("--interfaces", default="both",
+                     help="both | modbus | http -- the M5 independence lever")
+    lad.add_argument("--rounds", type=int, default=None,
+                     help="Modbus requests on one connection")
+    lad.add_argument("--http-rounds", type=int, default=None,
+                     help="HTTP exchanges, one fresh connection each")
+    lad.add_argument("--log-dir", default=None)
+    lad.set_defaults(func=cmd_ladder)
+
     args = p.parse_args(argv)
     return args.func(args)
+
+
+def cmd_ladder(args: argparse.Namespace) -> int:
+    """Run the graded attack and print the rung it derives.
+
+    The same run as `rehostry-adam6000-tm4c-attack`; the only difference is
+    that the rung table is printed too. The rung is on the `RESULT:` line
+    either way -- a default RESULT that says M4 while an opt-in flag says M5
+    is exactly the ceiling this subcommand was added to remove.
+    """
+    from . import attack
+    a = ["--ladder", "--control", args.control,
+         "--interfaces", args.interfaces]
+    if args.rounds is not None:
+        a += ["--rounds", str(args.rounds)]
+    if args.http_rounds is not None:
+        a += ["--http-rounds", str(args.http_rounds)]
+    if args.log_dir:
+        a += ["--log-dir", args.log_dir]
+    return attack.main(a)
 
 
 if __name__ == "__main__":

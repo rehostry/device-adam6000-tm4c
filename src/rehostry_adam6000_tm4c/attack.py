@@ -90,6 +90,31 @@ TARGET_COIL = int(os.environ.get("HAL_ADAM_TARGET_COIL", "0"), 0)
 # raises, and argparse `choices=` refuses it at the command line.
 CONTROL_MODES = ("none", "withhold")
 
+# WHICH LINKS AN ARM MAY TOUCH -- the M5 independence lever. `modbus` never
+# opens the HTTP bridge socket and `http` never sends a Modbus frame, so each
+# arm has to reach M4 on its own. This is the operational test, and it is the
+# only one a harness can actually run.
+INTERFACE_SETS = ("both", "modbus", "http")
+
+# HOW MANY HTTP EXCHANGES, and why this number. The httpd answers
+# `Connection: close` and sends FIN, so **every round is its own TCP
+# connection with its own handshake** -- a much stronger repeat than N messages
+# down one socket, and a server that had gone deaf could not complete round 2's
+# handshake at all. Six rounds walks the 404/501/200 cycle twice, so every
+# status the parser can choose is demanded more than once and no two
+# consecutive rounds expect the same answer.
+HTTP_ROUNDS = int(os.environ.get("HAL_ADAM_HTTP_ROUNDS", "6"), 0)
+MIN_HTTP_ROUNDS = 3          # one full cycle; below this the cycle is untested
+
+# Derived from this device's own timings, not guessed: a warm HTTP exchange on
+# this rehost takes ~3.3 s wall (measured, eight consecutive rounds), and the
+# first one after boot takes ~30 s because the peer's SYN and first segment are
+# retransmitted while the firmware is still copying its image to serial flash.
+# 150 s therefore leaves ~5x headroom on the slow first round and ~45x on the
+# rest. A bound is a classifier: too tight and a working server reads as dead.
+HTTP_FIRST_TIMEOUT = float(os.environ.get("HAL_ADAM_HTTP_FIRST_TIMEOUT", "150"))
+HTTP_TIMEOUT = float(os.environ.get("HAL_ADAM_HTTP_TIMEOUT", "90"))
+
 
 def mbap(txn: int, pdu: bytes, unit: int = MODBUS_UNIT) -> bytes:
     """Wrap a PDU in the Modbus/TCP header: transaction, protocol, length, unit."""
@@ -162,7 +187,16 @@ class DeviceScenario:
         return out
 
     # ---- boot -------------------------------------------------------------
-    def boot(self, on_stage: Callable) -> bool:
+    def boot(self, on_stage: Callable, attach: bool = True) -> bool:
+        """Boot the guest; with ``attach`` also open the Modbus client socket.
+
+        `attach=False` matters for the M5 independence arm. Readiness is the
+        firmware's own "IP ready." in the log, not the socket -- so the HTTP-only
+        arm can decline to open a Modbus connection at all. It used to open one
+        regardless, which meant that arm still made the device complete a TCP
+        handshake on tcp/502, and "this arm never touches Modbus" was very
+        slightly untrue. An independence claim has to be exactly true.
+        """
         if not paths.firmware_present():
             on_stage("error", note="firmware not found at %s -- regenerate it "
                                    "with tools/extract_firmware.py"
@@ -197,6 +231,11 @@ class DeviceScenario:
             on_stage("error", note="the firmware never reached 'IP ready.'")
             return False
         on_stage("boot", note="firmware is up: lwIP reports 'IP ready.'")
+
+        if not attach:
+            on_stage("boot", note="ARM: not attaching to the Modbus bridge -- "
+                                  "no connection is opened to tcp/502")
+            return True
 
         for _ in range(120):
             try:
@@ -651,63 +690,512 @@ def converse(dev: "DeviceScenario", on_stage: Optional[Callable] = None,
             "responses": detail}
 
 
+# ---------------------------------------------------------------------------
+# The HTTP arm
+# ---------------------------------------------------------------------------
+# WHY THIS ORACLE IS NOT A COPY OF THE MODBUS ONE. The Modbus oracle asserts
+# "no reply was a repeat of the one before it", which it can, because every
+# Modbus reply carries back that request's own transaction id. **This server
+# does not echo anything of the request**: two 404s are byte-identical, and a
+# borrowed `replayed` term would score a perfectly working httpd at zero. (A
+# sibling device in this fleet lost a genuine result to exactly that import.)
+#
+# What this server DOES do is *choose*, from bytes the attacker supplies, among
+# three answers its own code holds -- and compute the length of one of them:
+#
+#   GET /<nonce>       -> 404 File not found     (a URI it does not have)
+#   ZORK-<nonce> /     -> 501 Not implemented    (a method it does not know)
+#   GET /              -> 200 OK + Content-Length: N + exactly N body bytes
+#
+# That is the same discrimination argument the Modbus arm rests on (exception 1
+# for an unsupported function vs exception 2 for an unusable address), and it is
+# the attributor here: the shapes are cycled so **no two consecutive rounds
+# expect the same status**, which a stuck or replaying server cannot satisfy.
+# Nothing host-side parses HTTP -- the bridge and the peer move bytes -- and the
+# root page, the status lines and the `Server:` banner are all in the firmware
+# image (the page at image offset 0x5e65c) and in no host-side file.
+
+#: label, request template (``%N%`` is the per-round nonce), expected status.
+HTTP_SHAPES: List[Tuple[str, str, int]] = [
+    ("absent URI  -> 404",
+     "GET /nosuchfile-%N% HTTP/1.0\r\nHost: 10.0.0.1\r\n\r\n", 404),
+    ("unknown method -> 501",
+     "ZORK%N% / HTTP/1.0\r\nHost: 10.0.0.1\r\n\r\n", 501),
+    ("root page  -> 200",
+     "GET / HTTP/1.0\r\nHost: 10.0.0.1\r\nX-Probe-Nonce: %N%\r\n\r\n", 200),
+]
+
+
+def _http_nonce(run_id: int, i: int) -> str:
+    """A per-round quantity that exists nowhere in the image, model or config."""
+    return "%04X%04X" % (run_id & 0xFFFF, (0x9E37 * (i + 1)) & 0xFFFF)
+
+
+def _parse_http(raw: bytes) -> Dict[str, object]:
+    """Status code, headers and body of one reply. No validation here."""
+    out: Dict[str, object] = {"status": None, "headers": {}, "body_len": 0,
+                              "content_length": None, "raw_len": len(raw)}
+    if b"\r\n\r\n" not in raw:
+        return out
+    head, body = raw.split(b"\r\n\r\n", 1)
+    lines = head.split(b"\r\n")
+    first = lines[0].decode("latin-1")
+    if first.startswith("HTTP/1."):
+        parts = first.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            out["status"] = int(parts[1])
+    hdrs = {}
+    for line in lines[1:]:
+        if b":" in line:
+            k, v = line.split(b":", 1)
+            hdrs[k.decode("latin-1").strip().lower()] = \
+                v.decode("latin-1").strip()
+    out["headers"] = hdrs
+    out["body_len"] = len(body)
+    if "content-length" in hdrs and hdrs["content-length"].isdigit():
+        out["content_length"] = int(hdrs["content-length"])
+    return out
+
+
+def converse_http(host_port: int, on_stage: Optional[Callable] = None,
+                  rounds: int = HTTP_ROUNDS, control: str = "none",
+                  run_id: int = 0) -> Dict:
+    """Ask the device's own web server ``rounds`` questions, one connection each.
+
+    ``control="withhold"`` opens each connection exactly as the real arm does
+    and then never transmits the request line. The socket is still read, so a
+    bridge or emulator that had learned to answer on the firmware's behalf would
+    be caught replying to a question nobody asked.
+    """
+    if control not in CONTROL_MODES:
+        raise ValueError("unknown control mode %r" % (control,))
+
+    def _stage(name: str, **kw) -> None:
+        if on_stage:
+            on_stage(name, **kw)
+
+    passed = 0
+    statuses: List[Optional[int]] = []
+    detail: Dict[str, str] = {}
+    wrong_status: List[str] = []
+    bad_length: List[str] = []
+    identical_consecutive = False
+    previous: Optional[bytes] = None
+    statuses_seen: Dict[int, int] = {}
+
+    _stage("http", note=("CONTROL: %d HTTP requests are NOT transmitted; each "
+                         "connection is still opened and read"
+                         if control == "withhold" else
+                         "%d unauthenticated HTTP requests, each on its own "
+                         "fresh TCP connection to the device's web server")
+                        % rounds)
+
+    for i in range(rounds):
+        label, template, want = HTTP_SHAPES[i % len(HTTP_SHAPES)]
+        nonce = _http_nonce(run_id, i)
+        req = template.replace("%N%", nonce).encode()
+        budget = HTTP_FIRST_TIMEOUT if i == 0 else HTTP_TIMEOUT
+        raw = b""
+        try:
+            sock = socket.create_connection(("127.0.0.1", host_port),
+                                            timeout=30)
+        except OSError as exc:
+            detail["round %d %s" % (i, label)] = "connect failed: %s" % exc
+            break
+        try:
+            sock.settimeout(budget)
+            if control != "withhold":
+                sock.sendall(req)
+            deadline = time.time() + budget
+            while time.time() < deadline:
+                sock.settimeout(max(0.5, deadline - time.time()))
+                try:
+                    chunk = sock.recv(4096)
+                except socket.timeout:
+                    break
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                raw += chunk
+                parsed = _parse_http(raw)
+                cl = parsed["content_length"]
+                if parsed["status"] is not None and (
+                        cl is None or parsed["body_len"] >= cl):
+                    break
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+        parsed = _parse_http(raw)
+        got = parsed["status"]
+        statuses.append(got)
+        if got is None:
+            detail["round %d %s" % (i, label)] = (
+                "<nothing>" if not raw else "unparseable: %r" % raw[:60])
+            _stage("http", note="round %d went unanswered" % i)
+            break
+        statuses_seen[got] = statuses_seen.get(got, 0) + 1
+        note = "%d" % got
+        if got != want:
+            wrong_status.append("round %d (%s): got %d, the firmware must "
+                                "answer %d" % (i, label, got, want))
+            note += "  WRONG (wanted %d)" % want
+        # THE LENGTH IS THE FIRMWARE'S ARITHMETIC. A 200 must declare a
+        # Content-Length and then deliver exactly that many bytes; nothing
+        # host-side computes it, and a canned answer cannot track it.
+        if got == 200:
+            cl = parsed["content_length"]
+            if cl is None:
+                bad_length.append("round %d: a 200 with no Content-Length" % i)
+                note += "  no Content-Length"
+            elif parsed["body_len"] != cl:
+                bad_length.append("round %d: Content-Length %s but %d body "
+                                  "bytes" % (cl, parsed["body_len"]))
+                note += "  length mismatch"
+            else:
+                note += ", %d body bytes as declared" % cl
+        if previous is not None and raw == previous:
+            # The shapes are cycled so consecutive rounds NEVER expect the same
+            # status; two identical consecutive replies therefore mean the
+            # server stopped reading and started repeating.
+            identical_consecutive = True
+            note += "  IDENTICAL TO THE ROUND BEFORE"
+        previous = raw
+        detail["round %d %s" % (i, label)] = "%s   [%s]" % (
+            raw.split(b"\r\n", 1)[0].decode("latin-1"), note)
+        passed += 1
+
+    # RULE 2: N OF N, never `>= 1`. And `all()` over an empty list is
+    # vacuously True, so the round count is its own explicit term -- a run with
+    # `--http-rounds 0` must NOT pass, and there is a test that says so.
+    enough = rounds >= MIN_HTTP_ROUNDS
+    checks = {
+        "answered %d of %d HTTP rounds, each on its own connection"
+        % (passed, rounds): bool(rounds > 0 and passed == rounds),
+        "at least %d rounds were demanded (the cycle is exercised)"
+        % MIN_HTTP_ROUNDS: enough,
+        "every reply carried the status its own request shape demands":
+            bool(passed > 0 and not wrong_status),
+        "a real parser: absent URI (404), unknown method (501) and the root "
+        "page (200) are told apart":
+            len({s for s in statuses if s is not None}) >= 3,
+        "every 200 declared a Content-Length and delivered exactly that many "
+        "bytes": bool(passed > 0 and not bad_length),
+        "no reply repeated the one before it (consecutive rounds demand "
+        "different statuses)": bool(passed > 0 and not identical_consecutive),
+    }
+    http_round_trip = all(checks.values()) and passed == rounds and enough \
+        and rounds > 0
+    _stage("http", note="%d/%d HTTP rounds answered; statuses %s"
+                        % (passed, rounds, statuses_seen))
+    return {"http_round_trip": bool(http_round_trip),
+            "http_rounds_passed": passed,
+            "http_rounds_attempted": rounds,
+            "http_statuses_seen": statuses_seen,
+            "http_wrong_status": wrong_status,
+            "http_bad_length": bad_length,
+            "http_checks": checks,
+            "http_responses": detail}
+
+
+# ---------------------------------------------------------------------------
+# The ladder
+# ---------------------------------------------------------------------------
+#: THE RUNG IS DERIVED. It was the string literal ``"M4"`` -- a hard ceiling
+#: that no amount of evidence could raise, three lines below a `landed` that
+#: already conjoined everything. That is the defect this table removes: the
+#: milestone is now read out of the evidence, and `RESULT:` carries it on the
+#: default path, so a header can no longer disagree with its own run.
+#:
+#: M4 is "a protocol round trip", and EITHER server qualifies -- which is what
+#: makes the independence arms readable: `--interfaces http` must still reach
+#: M4 with no Modbus frame ever sent, and `--interfaces modbus` must still
+#: reach M4 with the HTTP bridge never opened.
+LADDER = (
+    ("M1", "console_alive"),
+    ("M3", "peripheral_driven"),
+    ("M4", "round_trip"),
+    ("M5", "multi_interface"),
+)
+
+#: **Rule 1: this does not shrink if we implement less.** The source is
+#: Advantech's own published capability set for the ADAM-6000 series -- the
+#: family is sold as a Modbus/TCP remote-I/O module with a built-in web
+#: configuration server, an SNMP agent and an MQTT client -- and this image
+#: corroborates all four in its own strings and its own console
+#: (`[snmp] enable snmp = 1`, `g_sDevSetting.pMqttSettTbl.ucEnMqtt`,
+#: `Server: ADAM-6000/8.1.0019`). Two of the four are graded. **The other two
+#: are left IN the denominator**: SNMP is UDP/161 and this rehost's peer models
+#: no UDP at all, and MQTT is an outbound client that would need a broker --
+#: both are ungraded, neither is refuted, and dropping them to make 2/2 out of
+#: 2/4 would be precisely the ratio-widening Rule 1 forbids.
+#:
+#: WHICH KEYS COLLAPSE, and why. `*_round_trip` keys are NOT interfaces:
+#:
+#:   * ONE interface, Modbus/TCP on 502 -- `modbus_round_trip`,
+#:     `sustained_round_trips`, `answers_with_data`,
+#:     `answers_that_were_exceptions`, `exception_codes_seen`. The five PROBES
+#:     shapes are five *function codes* down one connection to one server:
+#:     commands, not interfaces.
+#:   * ONE interface, HTTP on 80 -- `http_round_trip`, `http_rounds_passed`,
+#:     `http_statuses_seen`. The three request shapes are three *request
+#:     types* against one server: 404/501/200 is one parser discriminating,
+#:     not three links.
+#:   * NOT interfaces at all -- `booted`, `tx_ring_descriptors`, the EMAC's
+#:     frame and ARP counters. Those are wire-level facts. ARP is link-layer
+#:     plumbing underneath *both* services, not a third service.
+#:
+#: HONEST LIMIT ON THE INDEPENDENCE CLAIM, stated because it is load-bearing.
+#: The two servers are separable in the ways a harness can test: they are two
+#: separately-bound lwIP listening PCBs, two application parsers, and they are
+#: driven here by **two separately-modelled machines** with different MACs
+#: (02:00:00:5e:10:02 / :03) and different IPs (10.0.0.2 / 10.0.0.3), so one
+#: can answer while the other is quiescent and disabling either leaves the
+#: other's round trip untouched. What they are NOT is two *buses*: they share
+#: one EMAC, one lwIP, one driver and one live interrupt vector (IRQ 40 is the
+#: only one this image arms), and the firmware is bare-metal, so RULES §1a's
+#: second evidence form -- different drivers, IRQ vectors or RTOS tasks -- is
+#: NOT satisfied and is not claimed. The claim rests on §1a's first form plus
+#: the mandatory operational test.
+INTERFACE_INVENTORY = {
+    "links": [
+        "Modbus/TCP server, tcp/502 (graded)",
+        "HTTP configuration server, tcp/80 (graded)",
+        "SNMP agent, udp/161 (ungraded: this rehost's peer models no UDP; "
+        "the firmware's own console reports it enabled)",
+        "MQTT client to an external broker (ungraded: outbound, and no broker "
+        "is modelled)",
+    ],
+    "count": 4,
+    "graded": 2,
+    "m5_defined": True,
+    "source": "Advantech's published ADAM-6000-series capability set "
+              "(Modbus/TCP + web configuration server + SNMP agent + MQTT "
+              "client), corroborated by this image's own strings and console",
+    "collapsed": {
+        "modbus_tcp_502": ["modbus_round_trip", "sustained_round_trips",
+                           "answers_with_data",
+                           "answers_that_were_exceptions",
+                           "exception_codes_seen"],
+        "http_80": ["http_round_trip", "http_rounds_passed",
+                    "http_statuses_seen"],
+        "not_interfaces": ["booted", "tx_ring_descriptors", "arp_replies",
+                           "frames_in", "frames_out"],
+    },
+    "shared_substrate": "one EMAC0, one lwIP, one driver, one live IRQ (40), "
+                        "no RTOS -- so RULES 1a evidence form 2 does not "
+                        "apply and is not claimed",
+}
+
+#: Bulky keys kept off the one-line RESULT:. Everything else is emitted --
+#: including every HTTP key and the rung itself.
+RESULT_BULK = {"responses", "http_responses", "transcript"}
+
+
+def grade(res: Dict[str, object]) -> Tuple[str, Dict[str, bool]]:
+    """Derive (milestone, per-rung truth) from what this run measured.
+
+    M1 and M3 are deliberately DIFFERENT keys. `booted` here has always meant
+    "lwIP said IP ready.", which is already M3 -- the firmware configured and
+    operated its Ethernet MAC. M1 is the weaker, earlier fact: the guest ran
+    its own code far enough to print its own start banner. Grading both off one
+    key would make M1 and M3 the same rung.
+    """
+    res["peripheral_driven"] = bool(res.get("booted"))
+    # M3 implies M1: a device that brought lwIP up self-evidently ran.
+    res["console_alive"] = bool(res.get("console_alive")
+                                or res.get("booted"))
+    res["round_trip"] = bool(res.get("modbus_round_trip")
+                             or res.get("http_round_trip"))
+    res["multi_interface"] = bool(res.get("modbus_round_trip")
+                                  and res.get("http_round_trip"))
+    met = {rung: bool(res.get(key)) for rung, key in LADDER}
+    milestone = "M0"
+    for rung, key in LADDER:
+        if not res.get(key):
+            break
+        milestone = rung
+    return milestone, met
+
+
+def ladder_report(res: Dict[str, object]) -> str:
+    lines = ["", "LADDER (rung derived from evidence, never written down)"]
+    met = res.get("rungs_met") or {}
+    for rung, key in LADDER:
+        lines.append("  %-3s %-20s %s" % (rung, key,
+                                          "PASS" if met.get(rung) else "--"))
+    inv = INTERFACE_INVENTORY
+    lines.append("  inventory (%d published, %d graded; source: %s):"
+                 % (inv["count"], inv["graded"], inv["source"]))
+    for link in inv["links"]:
+        lines.append("      - %s" % link)
+    lines.append("  collapses: modbus_tcp_502 <- %d keys; http_80 <- %d keys; "
+                 "%d wire facts are not interfaces"
+                 % (len(inv["collapsed"]["modbus_tcp_502"]),
+                    len(inv["collapsed"]["http_80"]),
+                    len(inv["collapsed"]["not_interfaces"])))
+    lines.append("  shared substrate: %s" % inv["shared_substrate"])
+    lines.append("  arm: interfaces=%s  control=%s"
+                 % (res.get("interfaces_exercised"), res.get("control_mode")))
+    lines.append("  evidence: Modbus %s/%s answered; HTTP %s/%s answered, "
+                 "statuses %s"
+                 % (res.get("sustained_round_trips"),
+                    res.get("requests_attempted"),
+                    res.get("http_rounds_passed"),
+                    res.get("http_rounds_attempted"),
+                    res.get("http_statuses_seen")))
+    lines.append("  MILESTONE: %s" % res.get("milestone"))
+    return "\n".join(lines)
+
+
 def run_attack(on_stage: Optional[Callable] = None,
                log_dir: Optional[str] = None,
-               control: str = "none") -> Dict:
-    """Boot ONE device and hold a Modbus/TCP conversation with it.
+               control: str = "none",
+               interfaces: str = "both",
+               rounds: Optional[int] = None,
+               http_rounds: Optional[int] = None) -> Dict:
+    """Boot ONE device and hold conversations with the servers it runs.
 
     ONE GUEST, NOT ONE PER PROBE. This used to boot a separate device for each
     of five probes, because the rehost answered the first request after boot
     and nothing after it -- so `landed = all(checks)` read like a conjunction
     while every clause was answered by a different device on its first
     exchange. That structure could not have detected the defect it was working
-    around. It is gone: every question below is put to the same guest, in
-    order, down one connection, and the number it sustains is the result.
+    around. It is gone: every question below is put to the same guest.
+
+    ``interfaces`` is the M5 independence lever and it is enforced here, not
+    merely reported: ``"modbus"`` never opens the HTTP bridge port at all (the
+    bridge is not even told to bind it), and ``"http"`` never transmits a
+    Modbus frame. Each arm has to reach M4 on its own.
     """
     if control not in CONTROL_MODES:
         raise ValueError("unknown control mode %r; expected one of %s"
                          % (control, ", ".join(CONTROL_MODES)))
+    if interfaces not in INTERFACE_SETS:
+        raise ValueError("unknown interface set %r; expected one of %s"
+                         % (interfaces, ", ".join(INTERFACE_SETS)))
+    n_modbus = SUSTAINED_N if rounds is None else rounds
+    n_http = HTTP_ROUNDS if http_rounds is None else http_rounds
 
     def _stage(name: str, **kw) -> None:
         if on_stage:
             on_stage(name, **kw)
 
     port = int(os.environ.get("HAL_ADAM_ATTACK_PORT", "21300"), 0)
+    http_port = int(os.environ.get("HAL_ADAM_HTTP_ATTACK_PORT",
+                                   str(port + 1)), 0)
+    want_modbus = interfaces in ("both", "modbus")
+    want_http = interfaces in ("both", "http")
+
+    res: Dict[str, object] = {
+        "booted": False, "landed": False,
+        "control_mode": control,
+        "interfaces_exercised": interfaces,
+        "modbus_round_trip": False,
+        "http_round_trip": False,
+        "sustained_round_trips": 0,
+        "requests_attempted": n_modbus if want_modbus else 0,
+        "http_rounds_passed": 0,
+        "http_rounds_attempted": n_http if want_http else 0,
+        "first_unanswered_request": None,
+        "tx_ring_descriptors": TX_RING_DESCRIPTORS,
+        "checks": {}, "responses": {},
+    }
+
+    # THE HTTP BRIDGE IS ONLY BOUND WHEN THIS ARM MAY USE IT. That is what
+    # makes `--interfaces modbus` a real disabling and not a polite request:
+    # with the env var unset the bridge builds no HTTP service, opens no second
+    # peer, and the device's web server is never contacted at all.
+    env_http = os.environ.get("HAL_ADAM_HTTP_BRIDGE_PORT")
+    if want_http:
+        os.environ["HAL_ADAM_HTTP_BRIDGE_PORT"] = str(http_port)
+    else:
+        os.environ.pop("HAL_ADAM_HTTP_BRIDGE_PORT", None)
+
     dev = DeviceScenario(bridge_port=port, log_dir=log_dir)
     try:
-        if not dev.boot(on_stage or (lambda *a, **k: None)):
-            return {"booted": False, "landed": False,
-                    "control_mode": control,
-                    "modbus_round_trip": False,
-                    "sustained_round_trips": 0,
-                    "requests_attempted": SUSTAINED_N,
-                    "first_unanswered_request": None,
-                    "tx_ring_descriptors": TX_RING_DESCRIPTORS,
-                    "milestone": "M0",
-                    "checks": {"the device booted": False},
-                    "responses": {}}
-        result = converse(dev, on_stage, control=control)
+        if not dev.boot(on_stage or (lambda *a, **k: None),
+                        attach=want_modbus):
+            res["checks"] = {"the device booted": False}
+            res["log"] = dev.log
+            res["milestone"], res["rungs_met"] = grade(res)
+            res["interfaces"] = INTERFACE_INVENTORY
+            return res
+        console = "\n".join(dev.console())
+        res["console_alive"] = "6000_DIO" in console
+
+        if want_modbus:
+            res.update(converse(dev, on_stage, count=n_modbus,
+                                control=control))
+        else:
+            _stage("modbus", note="ARM: the Modbus seam is not touched by "
+                                  "this run -- no frame is transmitted to "
+                                  "tcp/502")
+            res["booted"] = "IP ready." in console
+
+        if want_http:
+            res.update(converse_http(http_port, on_stage, rounds=n_http,
+                                     control=control, run_id=os.getpid()))
+        else:
+            _stage("http", note="ARM: the HTTP bridge was never bound -- the "
+                                "device's web server is not contacted")
     finally:
         dev.teardown()
+        if env_http is None:
+            os.environ.pop("HAL_ADAM_HTTP_BRIDGE_PORT", None)
+        else:
+            os.environ["HAL_ADAM_HTTP_BRIDGE_PORT"] = env_http
 
-    # DERIVED from what this run measured, never asserted from STATUS.md. M4 is
-    # the sustained round trip above; a device that boots and talks on the
-    # console but cannot hold a conversation got no further than M3.
-    result["milestone"] = ("M4" if result["modbus_round_trip"]
-                           else "M3" if result["booted"] else "M0")
-    return result
+    # `landed` is the conjunction of whatever this arm actually exercised. An
+    # arm that touches one server is not penalised for not touching the other;
+    # that is the point of the lever.
+    parts = []
+    if want_modbus:
+        parts.append(bool(res.get("landed")) and bool(
+            res.get("modbus_round_trip")))
+    if want_http:
+        parts.append(bool(res.get("http_round_trip")))
+    res["landed"] = bool(parts) and all(parts)
+
+    res["log"] = dev.log
+    # DERIVED, never asserted. This line used to be the string literal "M4" --
+    # a ceiling no evidence could lift.
+    res["milestone"], res["rungs_met"] = grade(res)
+    res["interfaces"] = INTERFACE_INVENTORY
+    return res
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(
         prog="rehostry-adam6000-tm4c-attack",
-        description="Unauthenticated Modbus/TCP against the ADAM-6050 rehost; "
-                    "verified from the firmware's own replies.")
+        description="Unauthenticated Modbus/TCP and HTTP against the "
+                    "ADAM-6050 rehost; verified from the firmware's own "
+                    "replies.")
     p.add_argument("--control", default="none", choices=CONTROL_MODES,
                    help="'none' = the real attack; 'withhold' = the "
-                        "falsification control (the Modbus request frames are "
-                        "never transmitted; everything else is identical)")
+                        "falsification control (the request bytes are never "
+                        "transmitted on either seam; every connection is "
+                        "still opened and still read)")
     p.add_argument("--log-dir", default=None)
+    p.add_argument("--interfaces", default="both", choices=INTERFACE_SETS,
+                   help="which of the device's servers this arm may touch. "
+                        "'modbus' never binds the HTTP bridge and 'http' "
+                        "never sends a Modbus frame: this is the M5 "
+                        "independence test, and each arm must still reach M4 "
+                        "on its own")
+    p.add_argument("--rounds", type=int, default=None,
+                   help="Modbus requests on one connection (default %d)"
+                        % SUSTAINED_N)
+    p.add_argument("--http-rounds", type=int, default=None,
+                   help="HTTP exchanges, one fresh connection each (default "
+                        "%d; 0 demonstrates the empty-list guard)"
+                        % HTTP_ROUNDS)
+    p.add_argument("--ladder", action="store_true",
+                   help="also print the derived rung table (the RESULT line "
+                        "carries the rung either way)")
     # Reject unknown argv rather than ignoring it. This main() used to take no
     # argv at all, so a documented-looking flag was silently dropped and the
     # REAL attack ran and was reported as a control (playbook §2.200).
@@ -716,29 +1204,44 @@ def main(argv: Optional[List[str]] = None) -> int:
     def on_stage(name: str, **kw) -> None:
         print("[%s] %s" % (name, kw.get("note", "")), file=sys.stderr)
 
-    print("[mode] control=%r (%s)"
+    print("[mode] control=%r (%s)  interfaces=%r"
           % (args.control,
-             "REAL ATTACK" if args.control == "none" else "NEGATIVE CONTROL"),
+             "REAL ATTACK" if args.control == "none" else "NEGATIVE CONTROL",
+             args.interfaces),
           file=sys.stderr)
     result = run_attack(on_stage=on_stage, log_dir=args.log_dir,
-                        control=args.control)
+                        control=args.control, interfaces=args.interfaces,
+                        rounds=args.rounds, http_rounds=args.http_rounds)
     print()
     for name, ok in result.get("checks", {}).items():
         print("  [%s] %s" % ("PASS" if ok else "FAIL", name))
+    for name, ok in result.get("http_checks", {}).items():
+        print("  [%s] HTTP: %s" % ("PASS" if ok else "FAIL", name))
     print()
     for label, reply in result.get("responses", {}).items():
         print("  %-34s -> %s" % (label, reply))
-    print("\n  sustained round trips on one guest: %d/%d"
+    for label, reply in result.get("http_responses", {}).items():
+        print("  %-34s -> %s" % (label, reply))
+    print("\n  sustained Modbus round trips on one guest: %d/%d"
           % (result.get("sustained_round_trips", 0),
              result.get("requests_attempted", 0)))
     print("  of those: %d carried data, %d were exceptions %s"
           % (result.get("answers_with_data", 0),
              result.get("answers_that_were_exceptions", 0),
              result.get("exception_codes_seen", {})))
+    print("  HTTP rounds answered (one connection each): %d/%d, statuses %s"
+          % (result.get("http_rounds_passed", 0),
+             result.get("http_rounds_attempted", 0),
+             result.get("http_statuses_seen", {})))
+    # THE RUNG IS ON THE DEFAULT PATH. `--ladder` only adds the table; it does
+    # not change what RESULT: says, so a header can never disagree with a run.
+    if args.ladder:
+        print(ladder_report(result))
     print("\nRESULT: " + json.dumps(
-        {k: v for k, v in result.items() if k != "transcript"}))
-    # Non-zero below M4. Compare the RUNG, not the string: the first run
-    # to grade M5+ would otherwise exit 1 and be read as a failure.
+        {k: v for k, v in result.items() if k not in RESULT_BULK},
+        sort_keys=True, default=str))
+    # Non-zero below M4. Compare the RUNG, not the string: a run that grades
+    # M5 must not exit 1 and be read as a failure.
     import re as _re
     _m = _re.match(r"M(\d+)", result.get("milestone") or "")
     return 0 if (result.get("landed") and _m and int(_m.group(1)) >= 4) else 1

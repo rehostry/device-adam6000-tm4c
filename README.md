@@ -12,8 +12,13 @@ MAC, PHY, serial flash, uDMA and internal flash controller are modelled at the
 register level, and the protocol stack, the Modbus server and the boot logic
 are the firmware's own.
 
-Milestone **M4** (a Modbus/TCP round-trip). See [STATUS.md](STATUS.md) for the
-evidence, the identification work, and the bug that cost the most.
+Milestone **M5** — two of the device's own servers each complete a protocol
+round trip, and each does so with the other switched off: Modbus/TCP on 502
+(40/40 requests down one connection) and the ADAM-6000 web configuration server
+on 80 (6/6 exchanges, one fresh TCP connection each, discriminating 200 / 404 /
+501 from the request it is given). See [STATUS.md](STATUS.md) for the evidence,
+the independence test and its honest limits, the identification work, and the
+bug that cost the most.
 
 ## What the device is
 
@@ -54,7 +59,10 @@ source-tree injection.
 rehostry-adam6000-tm4c run --seconds 15             # boot + stream the console
 rehostry-adam6000-tm4c run --bridge --seconds 1800  # also expose the host bridge
 rehostry-adam6000-tm4c-panel                        # the polling web panel
-python -m rehostry_adam6000_tm4c.attack             # speak Modbus/TCP to it
+python -m rehostry_adam6000_tm4c.attack             # speak Modbus/TCP + HTTP to it
+rehostry-adam6000-tm4c ladder                       # ... and print the rung it derives
+rehostry-adam6000-tm4c ladder --interfaces http     # the M5 independence arm
+rehostry-adam6000-tm4c ladder --control withhold    # the falsification control
 ```
 
 `attack` boots **one** device and puts every question to it, in order, down one

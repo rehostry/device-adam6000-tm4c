@@ -475,3 +475,182 @@ def test_the_negative_control_is_not_a_modbus_function():
         attack.FN_READ_HOLDING, attack.FN_WRITE_SINGLE_COIL)
     bogus = [p for p in attack.PROBES if p[1][0] == attack.FN_BOGUS]
     assert bogus and bogus[0][3] == 1      # illegal function, not address
+
+
+# ---------------------------------------------------------------------------
+# The ladder. Added 2026-09-02: `milestone` was the string literal "M4" --
+# a ceiling no amount of evidence could lift -- assigned three lines below a
+# `landed` that already conjoined everything the run had measured. The HTTP
+# server the device had been serving all along could not have raised the rung
+# even after it was graded, because nothing read the evidence.
+# ---------------------------------------------------------------------------
+def test_milestone_is_derived_and_never_a_literal():
+    from rehostry_adam6000_tm4c import attack
+
+    full = {"booted": True, "modbus_round_trip": True, "http_round_trip": True}
+    assert attack.grade(dict(full))[0] == "M5"
+    # EITHER server alone is M4 -- which is what makes the independence arms
+    # readable: `--interfaces http` must still reach M4.
+    assert attack.grade({**full, "http_round_trip": False})[0] == "M4"
+    assert attack.grade({**full, "modbus_round_trip": False})[0] == "M4"
+    assert attack.grade({"booted": True})[0] == "M3"
+    assert attack.grade({"console_alive": True})[0] == "M1"
+    assert attack.grade({})[0] == "M0"
+
+    import inspect
+    src = inspect.getsource(attack)
+    for bad in ('res["milestone"] = "M', 'result["milestone"] = "M'):
+        assert bad not in src, "the rung is a literal again: %s" % bad
+
+
+def test_no_milestone_is_assigned_outside_the_ladder_table():
+    """Every rung `grade` can ever emit must come from LADDER (or be M0).
+
+    This is the structural guarantee the whole ladder rests on: the rung is
+    read out of the table, so a rung cannot be invented by a code path that
+    forgot to consult the evidence.
+    """
+    from rehostry_adam6000_tm4c import attack
+    import itertools
+
+    allowed = {rung for rung, _key in attack.LADDER} | {"M0"}
+    keys = [key for _rung, key in attack.LADDER] + [
+        "modbus_round_trip", "http_round_trip"]
+    # Exhaustive over every combination of the inputs the ladder reads.
+    for combo in itertools.product([False, True], repeat=len(keys)):
+        res = dict(zip(keys, combo))
+        rung, met = attack.grade(res)
+        assert rung in allowed, "grade() invented the rung %r from %r" % (
+            rung, res)
+        assert set(met) == {r for r, _ in attack.LADDER}
+    # And the table itself is ordered and well formed.
+    order = [int(r[1:]) for r, _ in attack.LADDER]
+    assert order == sorted(order) and len(set(order)) == len(order)
+
+
+def test_the_rung_reaches_RESULT_on_the_default_path():
+    """A rung an opt-in flag can see but `RESULT:` cannot is the same ceiling.
+
+    `--ladder` may only ADD the table; it must not be what makes the rung
+    visible, or a header could disagree with its own run.
+    """
+    from rehostry_adam6000_tm4c import attack
+    for key in ("milestone", "rungs_met", "multi_interface", "round_trip",
+                "http_round_trip", "http_rounds_passed", "http_statuses_seen",
+                "modbus_round_trip", "interfaces_exercised"):
+        assert key not in attack.RESULT_BULK
+
+
+def test_interface_inventory_is_not_ours_to_shrink():
+    """Rule 1: the denominator must not come from what we implemented."""
+    from rehostry_adam6000_tm4c import attack
+    inv = attack.INTERFACE_INVENTORY
+    # Four published interfaces, two graded. The ungraded two stay IN the
+    # denominator: dropping them to make 2/2 is the ratio-widening Rule 1
+    # forbids, and it would make M8 look closer than it is.
+    assert inv["count"] == 4 and inv["graded"] == 2
+    assert len(inv["links"]) == inv["count"]
+    assert inv["m5_defined"] is True
+    assert "Advantech" in inv["source"]
+    # It must say which keys collapse, so nothing counts `*_round_trip` keys
+    # as interfaces.
+    assert set(inv["collapsed"]) == {"modbus_tcp_502", "http_80",
+                                     "not_interfaces"}
+    assert "modbus_round_trip" in inv["collapsed"]["modbus_tcp_502"]
+    assert "http_round_trip" in inv["collapsed"]["http_80"]
+    # Wire-level facts are not interfaces and must be named as such.
+    for wire in ("arp_replies", "frames_in", "frames_out"):
+        assert wire in inv["collapsed"]["not_interfaces"]
+    # The honest limit on the independence claim has to be carried with it.
+    assert "IRQ (40)" in inv["shared_substrate"]
+
+
+def test_the_independence_lever_exists_and_refuses_nonsense():
+    from rehostry_adam6000_tm4c import attack
+    import pytest
+    assert attack.INTERFACE_SETS == ("both", "modbus", "http")
+    with pytest.raises(ValueError):
+        attack.run_attack(interfaces="wireless")
+    with pytest.raises(ValueError):
+        attack.run_attack(control="not-a-control")
+
+
+def test_the_two_peers_are_separately_modelled():
+    """Two 'interfaces' driven by one peer object would be one machine.
+
+    The independence claim rests on the HTTP client being a DIFFERENT host on
+    the segment from the Modbus master, so this checks they cannot silently
+    become the same object under two names.
+    """
+    from rehostry_adam6000_tm4c.peripheral_models import net_peer
+    import pytest
+    net_peer.reset_peers()
+    try:
+        a = net_peer.get_peer()
+        b = net_peer.get_peer("http")
+        assert a is not b
+        assert a.mac != b.mac
+        assert a.ip != b.ip
+        assert a.device_ip == b.device_ip      # same device, different callers
+        assert {p.name for p in net_peer.all_peers()} == {"default", "http"}
+        # An unknown name must raise rather than alias the default.
+        with pytest.raises(KeyError):
+            net_peer.get_peer("modbus-but-typoed")
+    finally:
+        net_peer.reset_peers()
+
+
+def test_the_http_oracle_is_n_of_n_and_guards_the_empty_list():
+    """Rule 2, and `all()` over an empty list is vacuously True.
+
+    With zero rounds every check that quantifies over replies is vacuous, so
+    the round count has to be its own explicit term. `rounds=0` opens no
+    socket, so this needs no emulator.
+    """
+    from rehostry_adam6000_tm4c import attack
+    out = attack.converse_http(host_port=1, rounds=0)
+    assert out["http_round_trip"] is False, \
+        "an empty round set passed -- the all()-over-empty guard is missing"
+    assert out["http_rounds_passed"] == 0
+    # Below the minimum cycle length it must also refuse.
+    assert attack.MIN_HTTP_ROUNDS >= 3
+
+
+def test_http_shapes_cycle_so_consecutive_rounds_differ():
+    """The attributor for this seam is the status the request shape demands.
+
+    This server echoes nothing of the request -- two 404s are byte-identical --
+    so the Modbus arm's `no reply was a repeat` term would score a working
+    httpd at zero if it were borrowed. What replaces it is the cycle: if two
+    consecutive rounds ever demanded the same status, a server that had gone
+    deaf and was repeating could satisfy it.
+    """
+    from rehostry_adam6000_tm4c import attack
+    wants = [w for _l, _t, w in attack.HTTP_SHAPES]
+    assert len(set(wants)) == len(wants) >= 3
+    for i in range(len(attack.HTTP_SHAPES) * 3):
+        a = attack.HTTP_SHAPES[i % len(attack.HTTP_SHAPES)][2]
+        b = attack.HTTP_SHAPES[(i + 1) % len(attack.HTTP_SHAPES)][2]
+        assert a != b
+    # Every shape must carry the per-round nonce, so no two rounds of the same
+    # shape are byte-identical on the wire.
+    for _label, template, _want in attack.HTTP_SHAPES:
+        assert "%N%" in template
+    assert attack._http_nonce(1, 0) != attack._http_nonce(1, 1)
+    assert attack._http_nonce(1, 0) != attack._http_nonce(2, 0)
+
+
+def test_the_http_status_set_is_the_firmwares_own():
+    """The three status lines the oracle demands must exist in the image.
+
+    If a status the oracle expects were NOT in the firmware, the oracle would
+    be asserting something only the harness could produce.
+    """
+    from rehostry_adam6000_tm4c import attack, paths
+    if not paths.firmware_present():
+        return                      # firmware is not redistributed
+    blob = open(paths.firmware_bin(), "rb").read()
+    for _label, _template, want in attack.HTTP_SHAPES:
+        assert b"HTTP/1.1 %d " % want in blob, \
+            "status %d is not in the firmware image" % want
+    assert b"Server: ADAM-6000/" in blob

@@ -1,6 +1,6 @@
 # Copyright 2026 Christopher Wright
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""One other machine on the wire: ARP, IPv4 and enough TCP to carry Modbus.
+"""Other machines on the wire: ARP, IPv4 and enough TCP to carry a session.
 
 WHY THIS EXISTS. The EMAC model moves Ethernet frames in and out of the
 firmware's DMA rings, which proves the MAC works and nothing else. Everything
@@ -13,6 +13,22 @@ it holds one connection at a time, and it implements exactly the parts of the
 stack a single well-behaved conversation needs -- because the medium here is
 lossless and in-order, so retransmission, windows and congestion control have
 nothing to do.
+
+THERE IS MORE THAN ONE OF THEM, AND THAT IS THE POINT. This module used to
+expose a single global peer, so every one of the device's servers had to be
+reached from the same machine, one connection at a time -- which meant the
+Modbus master and the web client were, in the model, indistinguishable. They
+are not indistinguishable on a plant network: a SCADA master and an engineer's
+browser are different hosts with different MACs and different addresses, and
+the device demultiplexes them in lwIP. `get_peer(name)` returns one peer per
+name, each with its OWN MAC and OWN IP, and each filters frames on them
+already (`on_device_frame` and `_on_ipv4` both check). The EMAC model fans
+every transmitted frame out to all of them.
+
+This is what makes the two servers separable *in the model* rather than only
+in our naming: with two peers registered, one can hold an established
+connection to :502 while the other holds one to :80, and disabling either
+leaves the other's round trip untouched.
 
 WHAT IT MUST GET RIGHT. lwIP validates checksums and sequence numbers, so the
 IP header checksum and the TCP checksum over its pseudo-header have to be
@@ -45,11 +61,24 @@ TCP_ACK = 0x10
 
 BROADCAST = b"\xff" * 6
 
-# The peer's identity. Locally-administered MAC, and an address on the same /24
-# as the device's factory default of 10.0.0.1.
+# The peers' identities. Locally-administered MACs, and addresses on the same
+# /24 as the device's factory default of 10.0.0.1. The DEFAULT peer keeps the
+# exact MAC and IP it always had, so the Modbus path is byte-identical to
+# before this file learned to hold more than one machine.
 PEER_MAC = bytes.fromhex(os.environ.get("HAL_ADAM_PEER_MAC", "0200005e1002"))
 PEER_IP = os.environ.get("HAL_ADAM_PEER_IP", "10.0.0.2")
 DEVICE_IP = os.environ.get("HAL_ADAM_DEVICE_IP", "10.0.0.1")
+
+#: One entry per modelled machine on the segment. A name that is not in here
+#: raises rather than silently aliasing the default -- a second "peer" that is
+#: really the first one under another name is exactly the collapse this whole
+#: mechanism exists to prevent.
+PEER_IDENTITIES = {
+    "default": (PEER_MAC, PEER_IP),
+    "http": (bytes.fromhex(os.environ.get("HAL_ADAM_HTTP_PEER_MAC",
+                                          "0200005e1003")),
+             os.environ.get("HAL_ADAM_HTTP_PEER_IP", "10.0.0.3")),
+}
 
 
 def ip_to_bytes(text: str) -> bytes:
@@ -70,9 +99,12 @@ def checksum(data: bytes) -> int:
 class NetPeer:
     """A single host on the same segment as the device."""
 
-    def __init__(self, send: Optional[Callable[[bytes], None]] = None) -> None:
-        self.mac = PEER_MAC
-        self.ip = ip_to_bytes(PEER_IP)
+    def __init__(self, send: Optional[Callable[[bytes], None]] = None,
+                 name: str = "default") -> None:
+        mac, ip = PEER_IDENTITIES[name]
+        self.name = name
+        self.mac = mac
+        self.ip = ip_to_bytes(ip)
         self.device_ip = ip_to_bytes(DEVICE_IP)
         self.device_mac: Optional[bytes] = None
         self._send = send
@@ -108,6 +140,16 @@ class NetPeer:
 
     def set_send(self, send: Callable[[bytes], None]) -> None:
         self._send = send
+
+    def ensure_send(self, send: Callable[[bytes], None]) -> None:
+        """Attach the transmit path if this peer does not have one yet.
+
+        Peers can be created after the EMAC model is built (the bridge makes
+        the HTTP one when it starts), so the fan-out attaches lazily rather
+        than assuming every peer existed at construction time.
+        """
+        if self._send is None:
+            self._send = send
 
     def _emit(self, frame: bytes) -> None:
         self.frames_out += 1
@@ -371,11 +413,34 @@ class NetPeer:
         return data
 
 
-_PEER: Optional[NetPeer] = None
+_PEERS: Dict[str, NetPeer] = {}
 
 
-def get_peer() -> NetPeer:
-    global _PEER
-    if _PEER is None:
-        _PEER = NetPeer()
-    return _PEER
+def get_peer(name: str = "default") -> NetPeer:
+    """The modelled machine called ``name``. Created on first use.
+
+    ``name`` must be a key of :data:`PEER_IDENTITIES`; an unknown name raises
+    instead of falling back to the default, because a peer that silently
+    aliases another is not a second peer.
+    """
+    if name not in PEER_IDENTITIES:
+        raise KeyError("no modelled peer %r; known peers: %s"
+                       % (name, ", ".join(sorted(PEER_IDENTITIES))))
+    peer = _PEERS.get(name)
+    if peer is None:
+        peer = _PEERS[name] = NetPeer(name=name)
+    return peer
+
+
+def all_peers() -> List[NetPeer]:
+    """Every machine currently modelled on the segment, in creation order.
+
+    The EMAC hands each transmitted frame to all of them; each ignores what is
+    not addressed to its own MAC/IP, exactly as a real NIC would.
+    """
+    return list(_PEERS.values())
+
+
+def reset_peers() -> None:
+    """Drop every modelled machine. For tests only."""
+    _PEERS.clear()
