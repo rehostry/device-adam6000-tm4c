@@ -1,8 +1,16 @@
-<!-- rehostry-census: milestone=M4 landed=true verdict=M4-OK verified=2026-08-28 method=live-run -->
+<!-- rehostry-census: milestone=M5 landed=true verdict=M4-OK verified=2026-09-02 method=live-run note=two-servers-Modbus502-HTTP80-one-EMAC-see-independence-section -->
 <!-- Copyright 2026 Christopher Wright; SPDX-License-Identifier: AGPL-3.0-or-later -->
-# STATUS — device-adam6000-tm4c  (**M4**)
+# STATUS — device-adam6000-tm4c  (**M5**)
 
-**Milestone reached: M4 — a sustained Modbus/TCP conversation.** The vendor
+**Milestone reached: M5 — two of the device's own servers each complete a
+protocol round trip, and each does so with the other switched off.** The
+Modbus/TCP result below was already there; what was missing was that the
+firmware has been serving its **web configuration server on tcp/80** the whole
+time, and nothing ever asked it a question. It answers, it discriminates, and
+it does so from a second modelled machine on the segment. See
+"The second server" and "The independence test" below.
+
+**Milestone previously recorded: M4 — a sustained Modbus/TCP conversation.** The vendor
 image boots its own bootloader, loads and runs the application, reads its
 (blank) serial flash, saves configuration to internal flash, brings up lwIP,
 transmits and receives Ethernet frames, completes a TCP handshake on port 502,
@@ -17,6 +25,224 @@ TCP connection, with no credential of any kind** — 40/40 in the graded run
 >>> 000100000006 01 41 00000001     function 0x41 -- not a Modbus function
 <<< 000100000003 01 c1 01           exception 1, illegal function
 ```
+
+## The second server, and how it was settled
+
+The fleet-wide capability sweep flagged this device at *medium* confidence and
+said plainly that it could not be settled from code: the image carries
+`HTTP/1.[01]`, `Server:`, `SNMP` and `MQTT` string sets, but **"the image
+contains an httpd string set" is not "the httpd is `init`'d and bound"**. Four
+in five such flags in that sweep turned out to be quiet-the-firmware stubs.
+
+It was settled by asking lwIP, which answers this question unambiguously.
+`net_peer.connect()` has always taken a port; only its caller was the literal
+`502`. Pointed at 80, a listening PCB replies SYN/ACK and an unbound port
+replies RST:
+
+```
+PEER: TCP 80->40001 [SYN|ACK] seq=0x196e ack=0x1001 len=0 win=2560
+```
+
+SYN/ACK. Then, with one `GET`:
+
+```
+HTTP/1.1 404 File not found
+Server: ADAM-6000/8.1.0019
+Content-type: text/html
+Connection: close
+```
+
+**It is not a stub, and it is not only a 404 machine.** It serves the ADAM-6000
+web UI:
+
+```
+>>> GET / HTTP/1.0
+<<< HTTP/1.1 200 OK
+    Server: ADAM-6000/8.1.0019
+    Content-type: text/html
+    Content-Length: 6463
+    <!DOCTYPE html><html lang="en-US"> ... 6463 bytes ...
+```
+
+That page is in the firmware image at offset `0x5e65c` and in **no** host-side
+file — checked. Nothing host-side parses HTTP: the bridge and the peer move
+bytes and nothing else.
+
+### Why this is evidence and not an echo
+
+The same discrimination argument the Modbus arm rests on. This server does not
+echo anything of the request, so two 404s are byte-identical — which is exactly
+why the Modbus oracle's *"no reply was a repeat of the one before it"* term was
+**not** borrowed for it; imported unchanged it would score a perfectly working
+httpd at zero. What this server does instead is **choose**, from bytes the
+attacker supplies, among three answers its own code holds, and **compute** the
+length of one of them:
+
+| request | firmware's answer |
+| --- | --- |
+| `GET /nosuchfile-<nonce>` | `404 File not found` |
+| `ZORK<nonce> /` | `501 Not implemented` |
+| `GET /` | `200 OK`, `Content-Length: 6463`, and exactly 6463 body bytes |
+
+The oracle cycles those three shapes so **no two consecutive rounds ever expect
+the same status** — that is the attributor here, in place of a transaction id.
+A server that had gone deaf and was repeating cannot satisfy it, and neither
+can a stale buffer.
+
+**Rule 2: six of six, and every round is its own TCP connection.** The httpd
+answers `Connection: close` and sends FIN, so each round re-handshakes from a
+fresh source port. A server that answered once and went deaf could not complete
+round 2's handshake at all. The count is `passed == rounds`, never `>= 1`.
+
+```
+round 0 absent URI  -> 404      HTTP/1.1 404 File not found   [404]
+round 1 unknown method -> 501   HTTP/1.1 501 Not implemented  [501]
+round 2 root page  -> 200       HTTP/1.1 200 OK   [200, 6463 body bytes as declared]
+round 3 absent URI  -> 404      HTTP/1.1 404 File not found   [404]
+round 4 unknown method -> 501   HTTP/1.1 501 Not implemented  [501]
+round 5 root page  -> 200       HTTP/1.1 200 OK   [200, 6463 body bytes as declared]
+```
+
+## The independence test (RULES §1a), run both ways
+
+M5 requires two interfaces that each pass M4 *and* an operational
+demonstration that disabling one does not disturb the other. Both arms were
+run, and the disabling is real rather than polite: `--interfaces modbus` never
+binds the HTTP bridge port and never creates the second peer, and
+`--interfaces http` never opens a connection to tcp/502 at all.
+
+```
+--interfaces both      Modbus 40/40, HTTP 6/6   MILESTONE: M5   exit 0
+--interfaces modbus    Modbus 40/40, HTTP  0/0  MILESTONE: M4   exit 0   (0 contacts on tcp/80)
+--interfaces http      Modbus  0/0,  HTTP 6/6   MILESTONE: M4   exit 0   (0 contacts on tcp/502)
+```
+
+**The two servers are driven by two separately-modelled machines**, not by one
+peer object under two names:
+
+```
+Bridge[modbus]: tcp/31684 -- from 10.0.0.2 (02:00:00:5e:10:02) to 10.0.0.1:502
+Bridge[http]:   tcp/31685 -- from 10.0.0.3 (02:00:00:5e:10:03) to 10.0.0.1:80
+```
+
+Getting that exactly right took a second pass. `DeviceScenario.boot()` used to
+open its readiness socket on the Modbus bridge **unconditionally**, so the
+HTTP-only arm still made the device complete a TCP handshake on tcp/502 — one
+line in the log, no Modbus request ever sent, and the arm still passed. But
+"this arm never touches Modbus" was then very slightly untrue, and an
+independence claim has to be exactly true, so readiness now comes from the
+firmware's own `IP ready.` and that arm opens no Modbus connection at all
+(measured: 0).
+
+In the `both` run the device completed handshakes with both peers —
+`TCP 502->40001 [SYN|ACK]` and `TCP 80->41001 [SYN|ACK]` — so one server was
+answering while the other was quiescent (§1a evidence form 1). `net_peer` now
+holds a registry rather than a single global, and an unknown peer name **raises
+rather than aliasing the default**, because a second peer that is silently the
+first one is not a second peer.
+
+### The honest limit on this claim, stated because it is load-bearing
+
+The two services share **one EMAC0, one lwIP, one driver, and one live
+interrupt vector** — IRQ 40 is the only external interrupt this image arms —
+and the firmware is bare-metal with no RTOS. So RULES §1a's *second* evidence
+form (different drivers, different IRQ vectors, different RTOS tasks) is **not
+satisfied here and is not claimed**. What is claimed is §1a's first form (one
+answers while the other is quiescent, from separately-modelled peers) plus the
+mandatory operational test above. A reader who requires "different **bus**"
+rather than "different server, different peer, separable both ways" would score
+this M4. That caveat is carried in the machine-readable inventory itself
+(`INTERFACE_INVENTORY["shared_substrate"]`), not only in this prose.
+
+## The ladder, and the ceiling that was removed
+
+`milestone` was the string literal `"M4"` — a hard ceiling assigned three lines
+below a `landed` that already conjoined everything the run had measured. The
+web server could have been graded and the rung still could not have risen,
+because nothing read the evidence. The rung is now derived from a `LADDER`
+table, `RESULT:` carries it **on the default path** (`--ladder` only adds the
+table, so a header cannot disagree with its own run), and a test asserts
+exhaustively that no rung outside the table can ever be emitted.
+
+```
+M1  console_alive        PASS
+M3  peripheral_driven    PASS
+M4  round_trip           PASS
+M5  multi_interface      PASS
+```
+
+The same run is reachable as a subcommand of the installed entry point:
+`rehostry-adam6000-tm4c ladder [--interfaces both|modbus|http]`.
+
+### The inventory is not ours to shrink (Rule 1)
+
+Four interfaces are published for the ADAM-6000 series; **two are graded, and
+the other two stay in the denominator**:
+
+| interface | status |
+| --- | --- |
+| Modbus/TCP, tcp/502 | graded, 40/40 |
+| HTTP configuration server, tcp/80 | graded, 6/6 |
+| SNMP agent, udp/161 | **ungraded, not refuted** — this rehost's peer models no UDP at all. The firmware's own console reports it enabled: `[snmp] enable snmp = 1`, `ucReadCommunity:public ucWriteCommunity:private` |
+| MQTT client | **ungraded, not refuted** — outbound to a broker, and no broker is modelled |
+
+Dropping the ungraded two to report 2/2 instead of 2/4 would be exactly the
+ratio-widening Rule 1 forbids. M8 on this device is 2 of 4, not met.
+
+**Which keys collapse.** `*_round_trip` keys are not interfaces:
+
+* **one** interface, Modbus/TCP — `modbus_round_trip`, `sustained_round_trips`,
+  `answers_with_data`, `answers_that_were_exceptions`, `exception_codes_seen`.
+  The five probe shapes are five *function codes* down one connection: commands,
+  not interfaces.
+* **one** interface, HTTP — `http_round_trip`, `http_rounds_passed`,
+  `http_statuses_seen`. 404/501/200 is one parser discriminating, not three
+  links.
+* **not interfaces at all** — `booted`, `tx_ring_descriptors`, `arp_replies`,
+  `frames_in`, `frames_out`. Wire-level facts. ARP is link-layer plumbing
+  underneath *both* services, not a third service.
+
+## The controls, and both arms of each
+
+A run that cannot be made to fail proves nothing.
+
+| knob | Modbus | HTTP | rung | exit |
+| --- | --- | --- | --- | --- |
+| `--control none` (real) | 40/40 | 6/6 | **M5** | 0 |
+| `--control withhold` | 0/40 | 0/6 | **M3** | 1 |
+| `--http-rounds 0` | — | 0/0 | **M3** | 1 |
+
+`withhold` opens every connection exactly as the real arm does, completes every
+handshake, and reads every socket — it only never transmits the request bytes.
+**Nothing came back on either seam**, which is what would catch a bridge or an
+emulator that had learned to answer on the firmware's behalf.
+
+`--http-rounds 0` is the `all()`-over-an-empty-list guard, and the guard is
+load-bearing rather than decorative: with zero rounds `passed == rounds` is
+`0 == 0`, vacuously true, so the round count is its own explicit term. Removing
+it flips that arm to a pass.
+
+The three MAC-model knobs from the original M4 work still apply unchanged
+(`HAL_ADAM_EMAC_RING_LEN=16` -> 1/40, `HAL_ADAM_STATIC_TXBUF=1` -> 2/40,
+`HAL_ADAM_EMAC_NO_CURSOR=1` -> 5/40).
+
+## Why the web UI is mostly 404, for the same reason the I/O is empty
+
+The module's HTML, JavaScript and applet all live in the same serial NOR flash
+as its device profile, and that flash is not part of the distributed image. The
+firmware says so on the way up:
+
+```
+[SIFlashRead_s] profile=ffffffff
+[SIFlashRead_s] html=ffffffff
+[SIFlashRead_s] JS=ffffffff
+[SIFlashRead_s] JAR=ffffffff
+```
+
+So every URI except the built-in root page is a 404 — the same blank-flash
+limit that makes nearly every Modbus address illegal. The root page is served
+because it is compiled into the image rather than stored in that flash.
+
 
 ## The count, and why it is the headline
 
@@ -299,6 +525,33 @@ watchpoint and a pointer-chain probe found it.
 - **The graded sweep is 40 requests, not an endurance test.** 200 was measured
   separately over the same seam and held, but nothing here establishes a bound;
   a longer run could still find one. Set `HAL_ADAM_SUSTAINED_N` to raise it.
+- **SNMP and MQTT are ungraded, not refuted.** SNMP would need UDP, which this
+  rehost's peer does not model at all; MQTT is an outbound client and no broker
+  is modelled. Both remain in the interface denominator, so **M8 is 2 of 4 and
+  not met**.
+- **The web UI is served but not driven.** Only `GET /` returns content; the
+  rest of the site is in the blank serial flash. No form POST, no login and no
+  configuration change has been exercised, so nothing here shows the web
+  server can *alter* device state — that would be the M6 question and it is
+  not claimed.
+- **The two graded servers share one bus.** One EMAC0, one lwIP, one driver,
+  one live IRQ (40), no RTOS. See "The honest limit on this claim" above; a
+  strict "different bus" reading of RULES §1a scores this device M4.
+- **The Modbus oracle's per-exchange bound is load-sensitive, and a bound is a
+  classifier.** `exchange()` allows 30 s per request against a warm reply that
+  takes well under a second. On an idle host that is ~300x headroom; on this
+  host at load average 22 (several emulators from other work running at once) a
+  confirmation run scored **0/40** while the device was demonstrably still
+  answering — its reply arrived on the wire *after* the oracle had given up
+  (`PEER: TCP 502->40001 [ACK|PSH]` following the timeout). Re-run on a settled
+  box it is 40/40 again. The bound was **not** widened to rescue the run: a
+  bound moved to make a test pass is how a classifier becomes a fabrication.
+  Treat any sub-40 Modbus score without a matching `uptime` as unreadable.
+- **The HTTP timeouts are derived from this device, not guessed**: a warm
+  exchange measures ~3.3 s and the first one after boot ~30 s (the peer's SYN
+  and first segment are retransmitted while the firmware copies its image to
+  serial flash), against bounds of 90 s and 150 s. A bound is a classifier;
+  these leave ~5x headroom on the worst measured case.
 
 ## What is established (and checked by `tools/extract_firmware.py`)
 

@@ -25,7 +25,12 @@ from . import paths
 
 # The device's real seam: Ethernet. Frames are bridged in and out of the EMAC0
 # model, and a minimal host-side network peer carries Modbus/TCP over them.
-BRIDGE_PORT = 21060
+BRIDGE_PORT_ENV = "HAL_ADAM_BRIDGE_PORT"
+DEFAULT_BRIDGE_PORT = 21060
+# A DEFAULT, not a pin: the same env var the bridge model reads
+# (bp_handlers/modbus_bridge.py) selects the port on BOTH sides, so a client
+# built from this constant follows the emulator wherever it binds.
+BRIDGE_PORT = int(os.environ.get(BRIDGE_PORT_ENV, str(DEFAULT_BRIDGE_PORT)), 0)
 # Symbolic seam id (e.g. the driver methods the bridge hooks), for the binding.
 UART_SEAM = "EMAC0 @0x400EC000 (the Ethernet MAC) + UART0 debug console"
 

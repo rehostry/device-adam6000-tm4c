@@ -128,8 +128,13 @@ class TivaRomApi(BPHandler):
         apb = get_apb()
         if apb is not None and self._tick_calls % self._net_every == 0:
             apb.emac.poll()
-            from ..peripheral_models.net_peer import get_peer
-            get_peer().on_poll()
+            from ..peripheral_models.net_peer import all_peers
+            # EVERY modelled machine gets its retransmit tick, not just the
+            # first: a peer that is never polled cannot retransmit, and a SYN
+            # that is never retransmitted looks exactly like a server that is
+            # not listening.
+            for _peer in all_peers():
+                _peer.on_poll()
             # The relay has to run on the device's own pump too: hanging it off
             # a boot-time ROM call means the device's answer is produced and
             # then never handed to the host.
