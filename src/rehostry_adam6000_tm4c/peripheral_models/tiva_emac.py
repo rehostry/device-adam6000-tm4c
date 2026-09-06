@@ -163,6 +163,29 @@ RING_SCAN = 16
 # register-level evidence rather than the peer's reassembly of it.
 TX_LOG_BYTES = int(os.environ.get("HAL_ADAM_TX_HEX", "32"), 0)
 
+# FALSIFICATION KNOB for the receive path's write accounting.
+#
+# `HalBackend.write_memory` answers an UNMAPPED address with `return False`;
+# it does not raise (checked in backends/unicorn_backend.py: the mem_write is
+# wrapped in a try that returns False). A `try/except` around it therefore
+# catches nothing, and a frame written nowhere is indistinguishable from a
+# frame delivered -- see DEVICE-PLAYBOOK w49.1.
+#
+# Set HAL_ADAM_RX_WRITE_FAULT=<n> to send the first n receive-buffer writes to
+# an address the backend cannot write. Nothing else changes: the same frame,
+# the same descriptor, the same code path. With the return value dropped the
+# model counts those n frames as received; with it checked it counts none of
+# them and reports them in `rx_write_failed` instead.
+RX_WRITE_FAULT = int(os.environ.get("HAL_ADAM_RX_WRITE_FAULT", "0"), 0)
+# VxWorks' freed-memory fill, and unmapped on this machine -- the same value
+# that produced the phantom on device-accusine-pcs-hmi.
+RX_FAULT_ADDR = 0xEEEEEEEE
+# HAL_ADAM_RX_COUNT_UNCHECKED=1 restores the pre-2026-09-06 behaviour: the
+# write's return value is dropped and the frame is counted, the interrupt
+# raised and the descriptor marked complete whether or not the bytes landed.
+# It exists so the fix above has a both-arms control that is one variable.
+RX_COUNT_UNCHECKED = os.environ.get("HAL_ADAM_RX_COUNT_UNCHECKED") == "1"
+
 
 def descriptor_stride() -> int:
     """Bytes per descriptor (``HAL_ADAM_EMAC_DESC_STRIDE``).
@@ -202,6 +225,10 @@ class TivaEmac(SocCatchAll):
         self.rx_queue: List[bytes] = []
         self.tx_count = 0
         self.rx_count = 0
+        # Receive-buffer writes the backend REFUSED. Kept separate from
+        # rx_count so "could not deliver" can never read as "delivered".
+        self.rx_write_failed = 0
+        self._rx_faults_left = RX_WRITE_FAULT
         self.rx_irq_pending = False
         self.tx_irq_pending = False
         self.tx_reclaims = 0
@@ -346,9 +373,10 @@ class TivaEmac(SocCatchAll):
         walking the same ring in different places.
         """
         log.error("DBG cursors=%s int_status=0x%x rxq=%d rx_irq=%s tx_irq=%s "
-                  "tx=%d rx=%d", self._cursors, self.int_status,
-                  len(self.rx_queue), self.rx_irq_pending, self.tx_irq_pending,
-                  self.tx_count, self.rx_count)
+                  "tx=%d rx=%d rx_write_failed=%d", self._cursors,
+                  self.int_status, len(self.rx_queue), self.rx_irq_pending,
+                  self.tx_irq_pending, self.tx_count, self.rx_count,
+                  self.rx_write_failed)
         for base in self.lists:
             self._debug_ring(base)
 
@@ -541,9 +569,42 @@ class TivaEmac(SocCatchAll):
             return False                         # will not fit this buffer
         if self._backend is None:
             return False
+        dest = buf
+        if self._rx_faults_left > 0:
+            self._rx_faults_left -= 1
+            dest = RX_FAULT_ADDR
+        # CHECK THE RETURN, not just for an exception. See RX_WRITE_FAULT
+        # above: an unmapped address comes back as False, and the shipped code
+        # here counted the frame, popped it off the queue, raised the receive
+        # interrupt and wrote a descriptor status saying "a valid N-byte frame
+        # is in this buffer" -- over whatever the buffer already held.
         try:
-            self._backend.write_memory(buf, 1, on_wire, len(on_wire))
+            ok = bool(self._backend.write_memory(dest, 1, on_wire,
+                                                 len(on_wire)))
         except Exception:                        # noqa: BLE001
+            ok = False
+        if not ok:
+            self.rx_write_failed += 1
+            log.warning("EMAC RX: the backend REFUSED a %d-byte write to "
+                        "0x%08x -- frame NOT delivered (rx_write_failed=%d, "
+                        "rx_count=%d, counted_anyway=%s)",
+                        len(on_wire), dest, self.rx_write_failed,
+                        self.rx_count, RX_COUNT_UNCHECKED)
+            if not RX_COUNT_UNCHECKED:
+                # Not delivered: leave the frame queued and the descriptor
+                # owned by the DMA. Returning False stalls the cursor, which
+                # is what `_walk` already does for a buffer that is too small.
+                return False
+        # THE DESCRIPTOR STATUS IS WHAT MAKES THE FRAME VISIBLE, so it is
+        # written -- and checked -- BEFORE anything is counted. It used to be
+        # written last and unchecked, so a refused status write left a frame
+        # counted, popped and announced that the guest could never find.
+        status = (len(on_wire) << RDES0_FL_SHIFT) | RDES0_FS | RDES0_LS
+        if not self._write_word(desc, status) and not RX_COUNT_UNCHECKED:
+            self.rx_write_failed += 1
+            log.warning("EMAC RX: the backend REFUSED the descriptor status "
+                        "write at 0x%08x -- frame NOT announced "
+                        "(rx_write_failed=%d)", desc, self.rx_write_failed)
             return False
         self.rx_queue.pop(0)
         self.rx_count += 1
@@ -554,8 +615,6 @@ class TivaEmac(SocCatchAll):
         # latency for no reason.
         self.rx_irq_pending = True
         self.int_status |= EMAC_INT_RECEIVE
-        status = (len(on_wire) << RDES0_FL_SHIFT) | RDES0_FS | RDES0_LS
-        self._write_word(desc, status)           # OWN cleared: the CPU's again
         if self.rx_count <= 24:
             log.info("EMAC RX #%d: %d bytes into 0x%08x", self.rx_count,
                      len(frame), buf)
@@ -565,10 +624,19 @@ class TivaEmac(SocCatchAll):
         """Queue an Ethernet frame for the firmware to receive."""
         self.rx_queue.append(bytes(frame))
 
-    def _write_word(self, addr: int, value: int) -> None:
+    def _write_word(self, addr: int, value: int) -> bool:
+        """Write one descriptor word. RETURNS whether it landed.
+
+        `write_memory` answers an unmapped address with False rather than an
+        exception, so the caller has to look at this. The descriptor status
+        word is what TELLS THE GUEST a frame is there; a receive that counted
+        itself and then failed to write this is a frame the firmware will
+        never see, recorded as one it received.
+        """
         if self._backend is None:
-            return
+            return False
         try:
-            self._backend.write_memory(addr, 4, value & 0xFFFFFFFF)
+            return bool(self._backend.write_memory(addr, 4,
+                                                   value & 0xFFFFFFFF))
         except Exception:                        # noqa: BLE001
-            pass
+            return False
