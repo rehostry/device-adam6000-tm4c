@@ -1,4 +1,4 @@
-<!-- rehostry-census: milestone=M5 landed=true verdict=M4-OK verified=2026-09-02 method=live-run note=two-servers-Modbus502-HTTP80-one-EMAC-see-independence-section -->
+<!-- rehostry-census: milestone=M5 landed=true verdict=M4-OK verified=2026-09-06 method=live-run note=two-servers-Modbus502-HTTP80-one-EMAC-see-independence-section -->
 <!-- Copyright 2026 Christopher Wright; SPDX-License-Identifier: AGPL-3.0-or-later -->
 # STATUS — device-adam6000-tm4c  (**M5**)
 
@@ -581,3 +581,37 @@ MAC with DMA descriptor rings, and a host-side TCP peer before a Modbus/TCP
 round-trip was possible. The round trip is real and is the firmware's own; what
 took a second pass was proving it could be repeated, which is the difference
 between a device that works and a device that answered once.
+
+## 2026-09-06 — a refused backend write was counted as a delivery (fixed)
+
+`HalBackend.write_memory` answers an **unmapped address with `return False`**;
+it does not raise. The receive path here wrapped it in `try/except`, which
+catches nothing, so a frame written nowhere was popped off the queue, counted
+in `rx_count`, given a descriptor status word saying *"a valid N-byte frame is
+in this buffer"* and announced with the receive interrupt — over whatever the
+buffer already held. The same defect sat one level of indirection away in
+`_write_word`, the write that actually makes the frame visible to the guest.
+
+Fixed: the return is checked, a refused write is counted in its own
+`rx_write_failed` field and **nothing is consumed** — the frame stays queued and
+the descriptor stays the DMA's, so the next pass retries it.
+
+**Both arms, one variable**, with `HAL_ADAM_RX_WRITE_FAULT=3` sending the first three
+receive-buffer writes to `0xEEEEEEEE`:
+
+| | `HAL_ADAM_RX_COUNT_UNCHECKED=1` (the shipped behaviour) | fixed |
+|---|---|---|
+| `rx_count` at the three refusals | 0 → 1 → 2 (three phantoms) | 0 → 0 → 0 |
+| this run's verdict | Modbus **0 of 40**, `milestone M4`, guard `WALL-M4` | Modbus **40 of 40**, `milestone M5`, guard `M4-OK` |
+
+**The knob is not inert and the fix is not cosmetic:** three refused writes under the shipped behaviour destroyed the Modbus leg outright, because the frames were consumed rather than retried.
+
+**On the normal path `rx_write_failed` is 0**, so no number this device has ever
+published was wrong — the counter simply could not have said so. Rung
+**unchanged: M5**, re-run live on 2026-09-06 and scored by importing
+`scratch-census-guard-a48/census_score.py`. Regression test:
+`tests/test_rx_write_return.py` (no emulator required); it is what found the
+second site.
+
+Fleet context: `DEVICE-PLAYBOOK.md` **w50**, and the audit of all 525
+`write_memory` call sites in `scratch-batch-s0906/write-memory-audit.tsv`.
