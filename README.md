@@ -1,6 +1,8 @@
 <!-- Copyright 2026 Christopher Wright; SPDX-License-Identifier: AGPL-3.0-or-later -->
 # device-adam6000-tm4c
 
+**Status: M5** (census-verified 2026-09-06) — see [STATUS.md](STATUS.md) for the graded evidence and for which rungs are refused or undefined. The machine-readable record is the census header on line 1 of that file.
+
 A rehost of the **Advantech ADAM-6000** remote I/O module's firmware
 (`6000_DIO V6.15B23`, TI TM4C129x), running under HALucinator on the unicorn
 backend.
