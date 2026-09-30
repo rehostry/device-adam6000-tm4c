@@ -202,13 +202,26 @@ class DeviceScenario:
                                    "with tools/extract_firmware.py"
                                    % paths.firmware_bin())
             return False
-        # Derived from the bridge port so several devices can run at once --
-        # `run_attack` boots one per probe, and a shared rx/tx port makes all
-        # but the first fail to bind and never reach "IP ready.".
+        # The ZMQ peripheral-bus pair. Derived from the bridge port so several
+        # devices can run at once -- `run_attack` boots one per probe, and a
+        # shared rx/tx pair makes all but the first fail to bind and never reach
+        # "IP ready.".
+        #
+        # ⚠ BUT `bridge_port + 1000` / `+ 2000` CANNOT STAY INSIDE A 100-PORT
+        # LANE BLOCK, by construction. A lane assigned 36150-36249 that relocates
+        # this device to 36150 gets rx/tx 37150/38150 -- a thousand and two
+        # thousand ports outside its own range, silently. `spawn.py` already
+        # documents `HAL_ADAM_RX_PORT`/`HAL_ADAM_TX_PORT` as the override and
+        # nothing was reading them, so they are honoured here first and the
+        # derived pair is the FALLBACK.
+        rx = os.environ.get("HAL_ADAM_RX_PORT")
+        tx = os.environ.get("HAL_ADAM_TX_PORT")
         argv = spawn.spawn_argv(python=self.python, emulator="unicorn",
                                 bridge=True,
-                                rx_port=self.bridge_port + 1000,
-                                tx_port=self.bridge_port + 2000)
+                                rx_port=int(rx, 0) if rx
+                                else self.bridge_port + 1000,
+                                tx_port=int(tx, 0) if tx
+                                else self.bridge_port + 2000)
         env = spawn.spawn_env(extra={
             "PYTHONUNBUFFERED": "1",
             "HAL_ADAM_BRIDGE_PORT": str(self.bridge_port),
