@@ -541,28 +541,121 @@ def test_the_rung_reaches_RESULT_on_the_default_path():
         assert key not in attack.RESULT_BULK
 
 
-def test_interface_inventory_is_not_ours_to_shrink():
-    """Rule 1: the denominator must not come from what we implemented."""
+def test_interface_inventory_is_DERIVED_not_typed():
+    """Rule 1: the denominator must not be a literal anyone can retype.
+
+    What this replaces: a test that asserted ``inv["count"] == 4`` against a
+    hard-coded dict.  It passed happily, and it was pinning the defect.
+    """
+    import hashlib
+    import json
+    import pathlib
+    import sys
     from rehostry_adam6000_tm4c import attack
-    inv = attack.INTERFACE_INVENTORY
-    # Four published interfaces, two graded. The ungraded two stay IN the
-    # denominator: dropping them to make 2/2 is the ratio-widening Rule 1
-    # forbids, and it would make M8 look closer than it is.
-    assert inv["count"] == 4 and inv["graded"] == 2
-    assert len(inv["links"]) == inv["count"]
-    assert inv["m5_defined"] is True
-    assert "Advantech" in inv["source"]
-    # It must say which keys collapse, so nothing counts `*_round_trip` keys
-    # as interfaces.
-    assert set(inv["collapsed"]) == {"modbus_tcp_502", "http_80",
+    root = pathlib.Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "tools"))
+    import derive_inventory as di
+    import inventory_guard as ig
+
+    # 1. NO LITERAL INVENTORY SURVIVES IN attack.py.
+    assert not hasattr(attack, "INTERFACE_INVENTORY")
+    # Only CODE lines -- the comment block above the derivation quotes the old
+    # literal on purpose, to say what was wrong with it.
+    code = [ln for ln in (root / "src" / "rehostry_adam6000_tm4c" /
+                          "attack.py").read_text().splitlines()
+            if not ln.lstrip().startswith("#")]
+    assert not [ln for ln in code
+                if '"count": 4' in ln or '"graded": 2' in ln]
+
+    # 2. The derivation is a function of the IMAGE BYTES.
+    image = pathlib.Path(di.default_image()).read_bytes()
+    d = di.derive(image)
+    assert d["image_sha256"] == hashlib.sha256(image).hexdigest()
+    assert d["n"] == len(d["entries"]) == len(d["entry_ids"])
+    assert d["n_is_a_floor"] is True
+    # Every entry names the declaring token(s) it rests on -- auditable.
+    for e in d["entries"]:
+        assert e["declared_by"], e["id"]
+
+    # 3. NOTHING THE OLD DENOMINATOR COUNTED HAS BEEN REMOVED.
+    ids = {e["id"] for e in d["entries"]}
+    for kept in ("modbus_tcp_502", "http_config_server_80", "snmp_agent_161",
+                 "mqtt_client"):
+        assert kept in ids, kept
+    assert d["n"] >= 4
+
+    # 4. The pre-registration matches, and the guard COMPARES SETS.
+    prereg = json.loads((root / "INVENTORY-PREREG.json").read_text())
+    assert prereg["n"] == d["n"]
+    assert set(prereg["entry_ids"]) == set(d["entry_ids"])
+    assert ig.run()["ok"] is True
+
+    # 5. THE GUARD BITES -- every falsification mode VOIDs, and at least one of
+    #    them leaves the entry-id set INTACT, so the raw-byte pin is load-bearing
+    #    rather than an id-only guard that a sibling image would satisfy.
+    base = ig.run()
+    ids_intact_but_void = False
+    for mode in ig.FALSIFY_MODES:
+        try:
+            o = ig.run(falsify=mode)
+        except SystemExit:
+            continue                      # the deriver refusing IS a void
+        assert o["ok"] is False, mode
+        if set(o["entry_ids"]) == set(base["entry_ids"]):
+            ids_intact_but_void = True
+            assert "block_bytes_sha256" in o["terms_fired"] or \
+                   "image_sha256" in o["terms_fired"]
+    assert ids_intact_but_void
+
+    # 6. The collapse table still says which keys are NOT interfaces.
+    assert set(attack.COLLAPSED) == {"modbus_tcp_502", "http_80",
                                      "not_interfaces"}
-    assert "modbus_round_trip" in inv["collapsed"]["modbus_tcp_502"]
-    assert "http_round_trip" in inv["collapsed"]["http_80"]
-    # Wire-level facts are not interfaces and must be named as such.
+    assert "modbus_round_trip" in attack.COLLAPSED["modbus_tcp_502"]
+    assert "http_round_trip" in attack.COLLAPSED["http_80"]
     for wire in ("arp_replies", "frames_in", "frames_out"):
-        assert wire in inv["collapsed"]["not_interfaces"]
-    # The honest limit on the independence claim has to be carried with it.
-    assert "IRQ (40)" in inv["shared_substrate"]
+        assert wire in attack.COLLAPSED["not_interfaces"]
+    assert "IRQ (40)" in attack.SHARED_SUBSTRATE
+
+
+def test_the_parity_numerator_is_not_an_inert_constant():
+    """`"graded": 2` used to be a literal. A numerator no arm can move is not a
+    measurement, so this drives the term both ways."""
+    from rehostry_adam6000_tm4c import attack
+    inv = attack.derive_inventory()
+    assert inv["guard_ok"] is True
+
+    both = {"modbus_round_trip": True, "http_round_trip": True}
+    attack._parity(both, inv)
+    assert both["parity_void"] is False
+    assert both["interfaces_at_m4"] == ["http_config_server_80",
+                                        "modbus_tcp_502"]
+    assert "2 of %d" % inv["n"] in both["parity"]
+
+    one = {"modbus_round_trip": True, "http_round_trip": False}
+    attack._parity(one, inv)
+    assert one["interfaces_at_m4"] == ["modbus_tcp_502"]
+    assert "1 of %d" % inv["n"] in one["parity"]
+
+    none_ = {"modbus_round_trip": False, "http_round_trip": False}
+    attack._parity(none_, inv)
+    assert none_["interfaces_at_m4"] == []
+    assert "0 of %d" % inv["n"] in none_["parity"]
+
+    # A guard mismatch publishes NO number at all, in either direction.
+    voided = dict(inv, guard_ok=False,
+                  void_reasons=["image_sha256: deliberately wrong"])
+    r = {"modbus_round_trip": True, "http_round_trip": True}
+    attack._parity(r, voided)
+    assert r["parity_void"] is True and r["parity"].startswith("VOID:")
+    assert "of %d" % inv["n"] not in r["parity"]
+
+    # And a derivation that could not run is UNDETERMINED, not a failure.
+    undet = dict(inv, undetermined="KeyError: simulated")
+    r2 = {"modbus_round_trip": True, "http_round_trip": True}
+    attack._parity(r2, undet)
+    assert r2["parity_void"] is True
+    assert r2["parity"].startswith("UNDETERMINED:")
+    assert "TOOL DEFECT" in r2["parity"]
 
 
 def test_the_independence_lever_exists_and_refuses_nonsense():
