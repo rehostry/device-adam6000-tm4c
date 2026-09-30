@@ -1,0 +1,161 @@
+{
+  "_comment": "PRE-REGISTERED inventory. Committed before any graded arm. A graded run that derives anything else VOIDS its parity fraction.",
+  "blocks": {
+    "A1": {
+      "bytes_len": 86,
+      "bytes_sha256": "f953d26bc16ad3cf659038f74bcedbbf238778cf27417df549109a868c0cc92a",
+      "count": 7,
+      "end": 419262,
+      "name": "service_config_json",
+      "predicate": "the UNIQUE printable run that is a JSON object template all of whose keys match [A-Za-z]+(port|Port|En|Diag)",
+      "start": 419176,
+      "tokens": [
+        "DSport",
+        "GCLport",
+        "MBEn",
+        "MBport",
+        "NetDiag",
+        "WebEn",
+        "Webport"
+      ]
+    },
+    "A2": {
+      "bytes_len": 7581,
+      "bytes_sha256": "6731050a9fa8f96b6ef9e321de5cac1787da29c96516ed64cc1f10cff51a909b",
+      "count": 4,
+      "end": 178069,
+      "name": "enable_console_decls",
+      "predicate": "printf template with exactly one conversion naming an identifier ending in En/EN/Flag, or containing 'enable'",
+      "start": 170488,
+      "tokens": [
+        "enable",
+        "usMBTCPFlag",
+        "usSNMPEn",
+        "usWebSrvEn"
+      ]
+    },
+    "A3": {
+      "bytes_len": 94,
+      "bytes_sha256": "3b65e30c630494c0a5b035f21fbe33abfba06d6d4dc6285e71a1c33d3aff1223",
+      "count": 2,
+      "end": 418898,
+      "name": "devsetting_decls",
+      "predicate": "g_sDevSetting.<table>.<field> = % declarations",
+      "start": 418804,
+      "tokens": [
+        "ucEnAzureIoTHub",
+        "ucEnMqtt"
+      ]
+    },
+    "A4": {
+      "bytes_len": 230593,
+      "bytes_sha256": "bdd0cba03e68a08401307a1e55787a3f35d50f5103e680fa3e2ccb3e017c19bb",
+      "count": 1,
+      "end": 282517,
+      "name": "boolean_enable_decls",
+      "predicate": "bEn<Name>=% declarations",
+      "start": 51924,
+      "tokens": [
+        "bEnDHCP"
+      ]
+    },
+    "A5": {
+      "bytes_len": 59,
+      "bytes_sha256": "fb9de05c12e8a81573c18450fd82e5a0cc3c3a3225e8bd5c70fa369b65609d7b",
+      "count": 3,
+      "end": 415799,
+      "name": "community_decl",
+      "predicate": "uc<Name>Community:%s sets",
+      "start": 415740,
+      "tokens": [
+        "ucReadCommunity",
+        "ucTrapCommunity",
+        "ucWriteCommunity"
+      ]
+    },
+    "A6": {
+      "bytes_len": 359305,
+      "bytes_sha256": "467a97faade01a5587a34cb20f39c7d2e9df2eba216640975a3dbe2e2cf92260",
+      "count": 17,
+      "end": 408821,
+      "name": "ascii_command_tokens",
+      "predicate": "4-byte-aligned NUL-padded slot-start token (ET|LS|GET|SET)[A-Z0-9]{2,10} with an optional trailing CR",
+      "start": 49516,
+      "tokens": [
+        "ETAH",
+        "ETCNT",
+        "ETDT",
+        "ETMBTCP",
+        "ETMQTPC",
+        "ETMQTT",
+        "ETSEC",
+        "ETSNMP",
+        "ETSNMPEN",
+        "ETSNTP",
+        "ETTLS",
+        "ETTRAP",
+        "ETUDP",
+        "ETWEBSRV",
+        "ETWP",
+        "GETMBTCPPN",
+        "LSMBTCP"
+      ]
+    }
+  },
+  "declaring_tokens": [
+    "A1:DSport",
+    "A1:GCLport",
+    "A1:MBEn",
+    "A1:MBport",
+    "A1:NetDiag",
+    "A1:WebEn",
+    "A1:Webport",
+    "A2:enable",
+    "A2:usMBTCPFlag",
+    "A2:usSNMPEn",
+    "A2:usWebSrvEn",
+    "A3:ucEnAzureIoTHub",
+    "A3:ucEnMqtt",
+    "A4:bEnDHCP",
+    "A5:ucReadCommunity",
+    "A5:ucTrapCommunity",
+    "A5:ucWriteCommunity",
+    "A6:ETAH",
+    "A6:ETCNT",
+    "A6:ETDT",
+    "A6:ETMBTCP",
+    "A6:ETMQTPC",
+    "A6:ETMQTT",
+    "A6:ETSEC",
+    "A6:ETSNMP",
+    "A6:ETSNMPEN",
+    "A6:ETSNTP",
+    "A6:ETTLS",
+    "A6:ETTRAP",
+    "A6:ETUDP",
+    "A6:ETWEBSRV",
+    "A6:ETWP",
+    "A6:GETMBTCPPN",
+    "A6:LSMBTCP"
+  ],
+  "device": "adam6000-tm4c",
+  "entry_ids": [
+    "ascii_command_service|A6:ETAH+A6:ETCNT+A6:ETUDP+A6:ETWP",
+    "azure_iothub_client|A3:ucEnAzureIoTHub",
+    "data_stream_push|A1:DSport",
+    "dhcp_client|A4:bEnDHCP",
+    "gcl_peer_service|A1:GCLport",
+    "http_config_server_80|A1:WebEn+A1:Webport+A2:usWebSrvEn+A6:ETWEBSRV",
+    "modbus_tcp_502|A1:MBEn+A1:MBport+A2:usMBTCPFlag+A6:ETMBTCP+A6:GETMBTCPPN+A6:LSMBTCP",
+    "mqtt_client|A3:ucEnMqtt+A6:ETMQTPC+A6:ETMQTT",
+    "netdiag_service|A1:NetDiag",
+    "snmp_agent_161|A2:enable+A2:usSNMPEn+A5:ucReadCommunity+A5:ucWriteCommunity+A6:ETSNMP+A6:ETSNMPEN",
+    "snmp_trap_client|A5:ucTrapCommunity+A6:ETTRAP",
+    "sntp_client|A6:ETDT+A6:ETSNTP"
+  ],
+  "floor_reason": "OTA_tcptls_* and the P2P task are further declared links that A1..A6 do not reach; REFERRED, not counted",
+  "image_len": 430636,
+  "image_sha256": "5081b9fe6541e214f907895355043d7f726f3e385ddec521954745afc2b61b1d",
+  "n": 12,
+  "n_is_a_floor": true
+}

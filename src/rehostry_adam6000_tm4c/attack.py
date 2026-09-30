@@ -960,39 +960,125 @@ LADDER = (
 #: second evidence form -- different drivers, IRQ vectors or RTOS tasks -- is
 #: NOT satisfied and is not claimed. The claim rests on §1a's first form plus
 #: the mandatory operational test.
-INTERFACE_INVENTORY = {
-    "links": [
-        "Modbus/TCP server, tcp/502 (graded)",
-        "HTTP configuration server, tcp/80 (graded)",
-        "SNMP agent, udp/161 (ungraded: this rehost's peer models no UDP; "
-        "the firmware's own console reports it enabled)",
-        "MQTT client to an external broker (ungraded: outbound, and no broker "
-        "is modelled)",
-    ],
-    "count": 4,
-    "graded": 2,
-    "m5_defined": True,
-    "source": "Advantech's published ADAM-6000-series capability set "
-              "(Modbus/TCP + web configuration server + SNMP agent + MQTT "
-              "client), corroborated by this image's own strings and console",
-    "collapsed": {
-        "modbus_tcp_502": ["modbus_round_trip", "sustained_round_trips",
-                           "answers_with_data",
-                           "answers_that_were_exceptions",
-                           "exception_codes_seen"],
-        "http_80": ["http_round_trip", "http_rounds_passed",
-                    "http_statuses_seen"],
-        "not_interfaces": ["booted", "tx_ring_descriptors", "arp_replies",
-                           "frames_in", "frames_out"],
-    },
-    "shared_substrate": "one EMAC0, one lwIP, one driver, one live IRQ (40), "
-                        "no RTOS -- so RULES 1a evidence form 2 does not "
-                        "apply and is not claimed",
+# ---------------------------------------------------------------------------
+# THE INVENTORY IS DERIVED (lane s0929-laneT, 2026-09-30)
+# ---------------------------------------------------------------------------
+#: ⚠ What used to sit here was a **hard-coded Python literal** -- a four-element
+#: ``links`` list with ``"count": 4`` and ``"graded": 2``, whose stated authority
+#: was *"Advantech's published ADAM-6000-series capability set"*.  Three defects,
+#: each a named trap on this fleet:
+#:
+#:   * **a typed denominator is not re-derivable, so it is not falsifiable.** No
+#:     run would have noticed the image being swapped for one declaring more.
+#:   * **``"graded": 2`` was an inert constant** -- a numerator no arm could move.
+#:   * **the source was the PRODUCT, not the image under test** (RULES §1d).
+#:
+#: It is now derived on EVERY RUN from the bytes the machine loads, by
+#: ``tools/derive_inventory.py``: six declaration blocks (A1..A6), each located
+#: by a stated structural predicate over the image's own maximal printable runs,
+#: each with its raw bytes pinned, plus a committed and auditable token->entry
+#: mapping.  ``tools/inventory_guard.py`` compares that derivation against
+#: ``INVENTORY-PREREG.json``, committed BEFORE any graded arm; a mismatch **in
+#: either direction** VOIDS the parity fraction.
+#:
+#: **The denominator went from 4 to 12 and NOTHING WAS REMOVED.**  All four of the
+#: old entries survive (Modbus/TCP, the web server, the SNMP agent, the MQTT
+#: client); the eight new ones are declared outbound clients and services the
+#: prose source never counted -- SNMP traps, SNTP, Azure IoT Hub, DHCP, the Data
+#: Stream push, GCL, NetDiag and the ASCII command service.  RULES §1a's
+#: 2026-09-30 ruling is explicit that a declared OUTBOUND CLIENT link IS an M8
+#: entry, and applying it lowers this row's fraction, which is the correct
+#: direction.
+#:
+#: ⚠ ``n`` is a **FLOOR**: ``OTA_tcptls_*`` and the P2P task are further declared
+#: links no block reaches, and they are REFERRED rather than counted.
+#:
+#: WHICH KEYS COLLAPSE, and why -- unchanged, and still true. `*_round_trip` keys
+#: are NOT interfaces:
+#:
+#:   * ONE interface, Modbus/TCP on 502 -- `modbus_round_trip`,
+#:     `sustained_round_trips`, `answers_with_data`,
+#:     `answers_that_were_exceptions`, `exception_codes_seen`. Five function
+#:     codes down one connection to one server: commands, not interfaces.
+#:   * ONE interface, HTTP on 80 -- `http_round_trip`, `http_rounds_passed`,
+#:     `http_statuses_seen`. 404/501/200 is one parser discriminating.
+#:   * NOT interfaces at all -- `booted`, `tx_ring_descriptors`, `arp_replies`,
+#:     `frames_in`, `frames_out`. Wire-level facts; ARP is link-layer plumbing
+#:     underneath *both* services, not a third service.
+#:
+#: HONEST LIMIT ON THE INDEPENDENCE CLAIM, stated because it is load-bearing.
+#: The two servers are separable in the ways a harness can test: two separately
+#: bound lwIP listening PCBs, two application parsers, driven by two separately
+#: modelled machines with different MACs (02:00:00:5e:10:02 / :03) and different
+#: IPs (10.0.0.2 / 10.0.0.3).  What they are NOT is two *buses*: one EMAC, one
+#: lwIP, one driver, one live IRQ vector (40), bare metal -- so RULES §1a's
+#: second evidence form is NOT satisfied and is not claimed.
+COLLAPSED = {
+    "modbus_tcp_502": ["modbus_round_trip", "sustained_round_trips",
+                       "answers_with_data", "answers_that_were_exceptions",
+                       "exception_codes_seen"],
+    "http_80": ["http_round_trip", "http_rounds_passed", "http_statuses_seen"],
+    "not_interfaces": ["booted", "tx_ring_descriptors", "arp_replies",
+                       "frames_in", "frames_out"],
 }
+SHARED_SUBSTRATE = ("one EMAC0, one lwIP, one driver, one live IRQ (40), no "
+                    "RTOS -- so RULES 1a evidence form 2 does not apply and is "
+                    "not claimed")
+
+
+def derive_inventory() -> Dict[str, object]:
+    """Re-derive and guard the inventory.  Never raises; reports Undetermined."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    tools = os.path.join(root, "tools")
+    try:
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import inventory_guard as _ig
+        g = _ig.run()
+        return {
+            "n": g["n"], "guard_ok": bool(g["ok"]),
+            "void_reasons": g["void_reasons"],
+            "terms_fired": g["terms_fired"],
+            "entry_ids": g["entry_ids"],
+            "block_shas": g["block_shas"],
+            "image_sha256": g["image_sha256_loaded"],
+            "unmapped_tokens": g.get("unmapped_tokens"),
+            "prereg": g["prereg_path"], "prereg_sha256": g["prereg_sha256"],
+            "undetermined": None,
+        }
+    except Exception as exc:        # a TOOL DEFECT, not a firmware finding
+        return {"n": None, "guard_ok": None, "void_reasons": [],
+                "terms_fired": [], "entry_ids": [],
+                "undetermined": "%s: %s" % (type(exc).__name__, exc)}
+
 
 #: Bulky keys kept off the one-line RESULT:. Everything else is emitted --
 #: including every HTTP key and the rung itself.
 RESULT_BULK = {"responses", "http_responses", "transcript"}
+
+
+def _parity(res: Dict[str, object], inv: Dict[str, object]) -> None:
+    """Write `parity` / `parity_void`.  A guard mismatch publishes NO number."""
+    graded = sorted(k for k, flag in
+                    (("modbus_tcp_502", res.get("modbus_round_trip")),
+                     ("http_config_server_80", res.get("http_round_trip")))
+                    if flag)
+    res["interfaces_at_m4"] = graded          # a LIST, and it moves with the arm
+    if inv["undetermined"]:
+        res["parity"] = ("UNDETERMINED: the inventory derivation did not run "
+                         "(%s). A TOOL DEFECT, not a firmware result."
+                         % inv["undetermined"])
+        res["parity_void"] = True
+    elif not inv["guard_ok"]:
+        res["parity"] = ("VOID: the derived inventory does not match the "
+                         "pre-registration -- %s"
+                         % "; ".join(inv["void_reasons"]))
+        res["parity_void"] = True
+    else:
+        res["parity"] = ("M8 DEFINED and UNMET at %d of %d (FLOOR) -- graded: %s"
+                         % (len(graded), inv["n"], ",".join(graded) or "none"))
+        res["parity_void"] = False
 
 
 def grade(res: Dict[str, object]) -> Tuple[str, Dict[str, bool]]:
@@ -1027,17 +1113,21 @@ def ladder_report(res: Dict[str, object]) -> str:
     for rung, key in LADDER:
         lines.append("  %-3s %-20s %s" % (rung, key,
                                           "PASS" if met.get(rung) else "--"))
-    inv = INTERFACE_INVENTORY
-    lines.append("  inventory (%d published, %d graded; source: %s):"
-                 % (inv["count"], inv["graded"], inv["source"]))
-    for link in inv["links"]:
-        lines.append("      - %s" % link)
+    lines.append("  inventory: %s" % res.get("parity"))
+    lines.append("  inventory source: %s" % res.get("inventory_source"))
+    lines.append("  inventory guard: ok=%s%s"
+                 % (res.get("inventory_guard_ok"),
+                    "" if res.get("inventory_guard_ok")
+                    else "  VOID: " + "; ".join(
+                        res.get("inventory_guard_void_reasons") or [])))
+    for eid in (res.get("inventory_entry_ids") or []):
+        lines.append("      - %s" % eid)
     lines.append("  collapses: modbus_tcp_502 <- %d keys; http_80 <- %d keys; "
                  "%d wire facts are not interfaces"
-                 % (len(inv["collapsed"]["modbus_tcp_502"]),
-                    len(inv["collapsed"]["http_80"]),
-                    len(inv["collapsed"]["not_interfaces"])))
-    lines.append("  shared substrate: %s" % inv["shared_substrate"])
+                 % (len(COLLAPSED["modbus_tcp_502"]),
+                    len(COLLAPSED["http_80"]),
+                    len(COLLAPSED["not_interfaces"])))
+    lines.append("  shared substrate: %s" % SHARED_SUBSTRATE)
     lines.append("  arm: interfaces=%s  control=%s"
                  % (res.get("interfaces_exercised"), res.get("control_mode")))
     lines.append("  evidence: Modbus %s/%s answered; HTTP %s/%s answered, "
@@ -1090,9 +1180,25 @@ def run_attack(on_stage: Optional[Callable] = None,
     want_modbus = interfaces in ("both", "modbus")
     want_http = interfaces in ("both", "http")
 
+    inv = derive_inventory()
     res: Dict[str, object] = {
         "booted": False, "landed": False,
         "control_mode": control,
+        "inventory_source": "DERIVED every run from the image's own bytes: six "
+                            "declaration blocks A1..A6, each located by a "
+                            "stated structural predicate and pinned by its raw "
+                            "bytes -- tools/derive_inventory.py",
+        "inventory_registered": inv["n"],
+        "inventory_is_a_floor": True,
+        "inventory_entry_ids": inv["entry_ids"],
+        "inventory_guard_ok": inv["guard_ok"],
+        "inventory_guard_void_reasons": inv["void_reasons"],
+        "inventory_guard_terms_fired": inv["terms_fired"],
+        "inventory_block_shas": inv.get("block_shas"),
+        "inventory_image_sha256": inv.get("image_sha256"),
+        "inventory_prereg": inv.get("prereg"),
+        "inventory_prereg_sha256": inv.get("prereg_sha256"),
+        "inventory_undetermined": inv["undetermined"],
         "interfaces_exercised": interfaces,
         "modbus_round_trip": False,
         "http_round_trip": False,
@@ -1122,7 +1228,7 @@ def run_attack(on_stage: Optional[Callable] = None,
             res["checks"] = {"the device booted": False}
             res["log"] = dev.log
             res["milestone"], res["rungs_met"] = grade(res)
-            res["interfaces"] = INTERFACE_INVENTORY
+            _parity(res, inv)
             return res
         console = "\n".join(dev.console())
         res["console_alive"] = "6000_DIO" in console
@@ -1164,7 +1270,7 @@ def run_attack(on_stage: Optional[Callable] = None,
     # DERIVED, never asserted. This line used to be the string literal "M4" --
     # a ceiling no evidence could lift.
     res["milestone"], res["rungs_met"] = grade(res)
-    res["interfaces"] = INTERFACE_INVENTORY
+    _parity(res, inv)
     return res
 
 
