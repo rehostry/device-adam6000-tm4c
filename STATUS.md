@@ -1,4 +1,4 @@
-<!-- rehostry-census: milestone=M5 landed=true verdict=M4-OK verified=2026-09-06 method=live-run note=two-servers-Modbus502-HTTP80-one-EMAC-see-independence-section -->
+<!-- rehostry-census: milestone=M5 landed=true verdict=M4-OK verified=2026-09-30 method=live-run n=2of12 note=M8-DEFINED-and-UNMET-2of12-FLOOR;denominator-DERIVED-from-six-image-declaration-blocks-was-a-hardcoded-4;M5-operational-test-run-live-both-ways;two-servers-Modbus502-HTTP80-one-EMAC -->
 <!-- Copyright 2026 Christopher Wright; SPDX-License-Identifier: AGPL-3.0-or-later -->
 # STATUS — device-adam6000-tm4c  (**M5**)
 
@@ -174,43 +174,196 @@ M5  multi_interface      PASS
 The same run is reachable as a subcommand of the installed entry point:
 `rehostry-adam6000-tm4c ladder [--interfaces both|modbus|http]`.
 
-### The inventory is not ours to shrink (Rule 1)
+### ⚠ CORRECTION 2026-09-30 — the inventory was a hard-coded literal, and it was 4 when the image declares 12
 
-Four interfaces are published for the ADAM-6000 series; **two are graded, and
-the other two stay in the denominator**:
+**Lane `s0929-laneT`. No parity gain came from removing an entry; the
+denominator grew from 4 to 12 and the fraction got worse.**
 
-| interface | status |
-| --- | --- |
-| Modbus/TCP, tcp/502 | graded, 40/40 |
-| HTTP configuration server, tcp/80 | graded, 6/6 |
-| SNMP agent, udp/161 | **ungraded, not refuted** — this rehost's peer models no UDP at all. The firmware's own console reports it enabled: `[snmp] enable snmp = 1`, `ucReadCommunity:public ucWriteCommunity:private` |
-| MQTT client | **ungraded, not refuted** — outbound to a broker, and no broker is modelled |
+What stood here was a four-row table whose authority was *"Advantech's own
+published capability set for the ADAM-6000 series"*, backed in code by
 
-Dropping the ungraded two to report 2/2 instead of 2/4 would be exactly the
-ratio-widening Rule 1 forbids. M8 on this device is 2 of 4, not met.
+```python
+INTERFACE_INVENTORY = {"links": [...], "count": 4, "graded": 2, ...}
+```
 
-**Which keys collapse.** `*_round_trip` keys are not interfaces:
+**Three defects, each a named trap:**
+
+1. ***A typed denominator cannot be falsified.*** Nothing in any run would have
+   noticed the image being swapped for one declaring more or fewer services.
+   Rule 1 is not satisfied by a list being *published somewhere*; it is
+   satisfied by the number being **re-derivable from a source that does not
+   shrink when we implement less**.
+2. ***`"graded": 2` was an inert constant*** — a numerator no arm could move.
+   The `--interfaces` lever already existed and the published fraction could
+   not feel it.
+3. ***The source was the PRODUCT, not the image under test.*** RULES §1d is
+   explicit: the denominator is what **this image** declares.
+
+#### What replaced it: six declaration blocks, parsed from the guest's bytes every run
+
+`tools/derive_inventory.py`. **This image carries no service dispatch table** —
+the ASCII command decoder is a chain of inline character compares and the tokens
+sit in scattered literal pools — so there is nothing here of the shape
+`digi-connectme-app`'s 41-record table has. **Saying that plainly is part of the
+result.** What the image *does* carry is six declarations, each located by a
+stated structural predicate over its own maximal NUL-terminated printable runs,
+each with its raw bytes pinned by sha256:
+
+| block | predicate | n | tokens |
+| --- | --- | --- | --- |
+| **A1** `service_config_json` | **the UNIQUE** printable run that is a JSON object template *all* of whose keys match `[A-Za-z]+(port\|Port\|En\|Diag)`. Uniqueness is **asserted at derive time**: two candidates and the derivation refuses rather than choosing | 7 | `DSport GCLport NetDiag MBEn MBport WebEn Webport` |
+| **A2** `enable_console_decls` | a printf template with **exactly one** conversion naming an identifier ending `En`/`EN`/`Flag`, or containing `enable` | 4 | `usMBTCPFlag usSNMPEn usWebSrvEn enable` |
+| **A3** `devsetting_decls` | `g_sDevSetting.<table>.<field> = %` | 2 | `ucEnMqtt ucEnAzureIoTHub` |
+| **A4** `boolean_enable_decls` | `bEn<Name>=%` | 1 | `bEnDHCP` |
+| **A5** `community_decl` | `uc<Name>Community:%s` sets | 3 | `ucReadCommunity ucWriteCommunity ucTrapCommunity` |
+| **A6** `ascii_command_tokens` | 4-byte-aligned, slot-start, NUL-padded `(ET\|LS\|GET\|SET)[A-Z0-9]{2,10}` with an optional trailing CR | 17 | `ETMBTCP LSMBTCP GETMBTCPPN ETWEBSRV ETSNMP ETSNMPEN ETTRAP ETSNTP ETDT ETMQTT ETMQTPC ETUDP ETCNT ETWP ETAH ETSEC ETTLS` |
+
+A1's uniqueness check is the load-bearing part: **it removes our judgement from
+the selection.** A2 is unique in yield too — the broad version of that predicate
+was tried and rejected, see below.
+
+⚠ **A6 is the weakest step and is labelled as such: the `ET|LS|GET|SET` prefix
+set is OURS.** The tokens and their count are the firmware's. A prefix-free
+version of the same alignment rule was tried first and collected **60** tokens
+including `NAN`, `INF`, `RSA` and `A2000` — noise, not a capability set.
+
+⚠ **And the first version of A6 required a NUL terminator, which silently
+dropped every CR-terminated token** (`LSMBTCP\r`, `VER\r`, `NAME\r`). That is a
+**matcher-produced absence** — the failure mode that has already wrongly removed
+an entry once on this fleet. It was found by asking why a token visible in
+`strings` was missing from the derivation, not by the derivation complaining.
+
+#### The mapping, and the twelve entries
+
+The token → entry mapping is a committed table in `derive_inventory.py:MAP`, and
+**every entry prints the declaring tokens it rests on**, so a reader can walk
+from a raw byte to an entry. `ETSEC`/`ETTLS` map to **substrate** (TLS parameters
+for the transports above; no endpoint of their own, RULES §1a). A declared token
+the mapping does not cover becomes a `mapping_gap_*` entry of its own — nothing
+the firmware declares vanishes because our table has no row, and it is also what
+keeps `n` a function of the **image** rather than of the mapping literal.
+
+| # | entry | declared by | status |
+| --- | --- | --- | --- |
+| 1 | Modbus/TCP server, tcp/502 | A1:MBEn, A1:MBport, A2:usMBTCPFlag, A6:ETMBTCP, A6:LSMBTCP, A6:GETMBTCPPN | **graded 40/40** |
+| 2 | HTTP configuration server, tcp/80 | A1:WebEn, A1:Webport, A2:usWebSrvEn, A6:ETWEBSRV | **graded 6/6** |
+| 3 | SNMP agent, udp/161 | A2:usSNMPEn, A2:enable, A5:ucRead/WriteCommunity, A6:ETSNMP, A6:ETSNMPEN | ungraded: this rehost's peer models no UDP |
+| 4 | **SNMP trap client (outbound)** | A5:ucTrapCommunity, A6:ETTRAP | ungraded — **NEW** |
+| 5 | **SNTP client (outbound)** | A6:ETSNTP, A6:ETDT | ungraded — **NEW** |
+| 6 | MQTT client (outbound) | A3:ucEnMqtt, A6:ETMQTT, A6:ETMQTPC | ungraded: no broker modelled |
+| 7 | **Azure IoT Hub client (outbound)** | A3:ucEnAzureIoTHub | ungraded — **NEW**; a different peer and a different topic namespace from the plain broker |
+| 8 | **DHCP client (outbound)** | A4:bEnDHCP | ungraded — **NEW** |
+| 9 | **Data Stream push (outbound)** | A1:DSport | ungraded — **NEW** |
+| 10 | **GCL peer service** | A1:GCLport | ungraded — **NEW** |
+| 11 | **NetDiag service** | A1:NetDiag | ungraded — **NEW** |
+| 12 | **ASCII command service** | A6:ETUDP, ETCNT, ETWP, ETAH | ungraded — **NEW** |
+
+**All four of the old entries survive.** The eight new ones are six declared
+**outbound clients** plus two services the prose source never counted. RULES
+§1a's 2026-09-30 ruling is explicit that *a declared outbound client link IS an
+M8 entry* — direction is not the test — and §1a already admits mastering.
+`ETCNT`/`ETWP`/`ETAH` are further **commands on the one ASCII seam**, and §1a is
+equally explicit that two commands over one seam are one interface, so they map
+to entry 12 rather than becoming entries of their own.
+
+⚠ **`n = 12` is a FLOOR.** `OTA_tcptls_connect_cb` and `[P2PTask] recvfrom=` are
+further declared links that A1..A6 do not reach. Growing the denominator that
+way needs a further independently-derived source, so it is **REFERRED**. Note
+the direction: acting on the referral can only make this fraction **worse**.
+
+#### The guard, and its falsification arm
+
+`tools/inventory_guard.py` re-derives on every graded run and compares against
+`INVENTORY-PREREG.json`, **committed before any graded arm** (this session's
+commit history carries the ordering). It compares **SETS, not sizes**, in both
+directions, and it pins the image sha256, each block's derived extent, each
+block's **raw bytes** sha256, each block's token set, the entry-id set, and `n`.
+
+⚠ **Two lessons it is built around.** *Compare sets, not sizes* — two sibling
+rows elsewhere in this batch both derived `n=21` from different images, and a
+size-only guard would have accepted one row's pre-registration against the
+other's bytes. *An id-only guard can be inert* — so the raw-byte pin exists, and
+an arm exists that demonstrates it bites when no id moves.
+
+`tools/inventory_guard.py --falsify-all`, run live 2026-09-30:
+
+| arm | what it changes | entry-id set | terms that fired | verdict |
+| --- | --- | --- | --- | --- |
+| *(control)* | nothing | — | none | **ok, n=12** |
+| `flip-inner-byte` | the `}` closing A1's template | **unchanged** | `image_sha256`, `block_bytes_sha256` | **VOID** |
+| `rename-a1-key` | `"MBport"` → `"MZport"` | changed | +`block_tokens_*`, `entry_ids_*`, `n` | **VOID** |
+| `break-a1-uniqueness` | makes a second run match A1's predicate | — | the **deriver refuses** | **VOID** |
+| `rename-a6-token` | `ETWEBSRV` → `STWEBSRV` | changed | +`block_extent` | **VOID** |
+| `drop-a6-cr-token` | the first `LSMBTCP\r` of two | **unchanged** | `image_sha256`, `block_bytes_sha256` | **VOID** |
+| `rename-a5-community` | `ucTrapCommunity` | changed | +`block_tokens_*`, `entry_ids_*`, `n` | **VOID** |
+| `rename-a3-field` | `ucEnAzureIoTHub` | changed | +`block_tokens_*`, `entry_ids_*`, `n` | **VOID** |
+| `image-byte` | the last byte of the image | **unchanged** | `image_sha256` **alone** | **VOID** |
+
+**Every term is moved by at least one arm; none is inert.** Two rows matter
+most. `flip-inner-byte` and `drop-a6-cr-token` leave **every entry id intact**
+and still VOID — that is the raw-byte pin doing work an id-only guard could not.
+`image-byte` fires the image term **alone**, which is how the table shows the
+block terms are not merely shadowed by the whole-image hash.
+
+⚠ **A defect in the first version of this guard, found by its own arms:** the
+arms printed only the *first* void reason, so every mode reported
+`image_sha256` and the block and id terms were never shown to work at all. A
+guard whose arms always trip the same term teaches nothing about the rest. It
+now prints every term that fired and names the terms no arm moved.
+
+#### Which keys collapse — unchanged
 
 * **one** interface, Modbus/TCP — `modbus_round_trip`, `sustained_round_trips`,
   `answers_with_data`, `answers_that_were_exceptions`, `exception_codes_seen`.
-  The five probe shapes are five *function codes* down one connection: commands,
-  not interfaces.
+  Five function codes down one connection: commands, not interfaces.
 * **one** interface, HTTP — `http_round_trip`, `http_rounds_passed`,
-  `http_statuses_seen`. 404/501/200 is one parser discriminating, not three
-  links.
+  `http_statuses_seen`. 404/501/200 is one parser discriminating.
 * **not interfaces at all** — `booted`, `tx_ring_descriptors`, `arp_replies`,
-  `frames_in`, `frames_out`. Wire-level facts. ARP is link-layer plumbing
-  underneath *both* services, not a third service.
+  `frames_in`, `frames_out`. Wire-level facts. **`arp_replies` was already
+  listed here for exactly the reason §1a's substrate ruling gives**, and that
+  stands.
+
+### M8: DEFINED and UNMET at 2 of 12 (FLOOR), measured live 2026-09-30
+
+`parity` is now written by the run, from the derivation, and **it moves with the
+arm** — which is what `"graded": 2` could never do:
+
+| arm | Modbus | HTTP | rung | parity the run printed |
+| --- | --- | --- | --- | --- |
+| `--interfaces both` | **40/40** | **6/6** | M5 | `M8 DEFINED and UNMET at 2 of 12 (FLOOR)` |
+| `--interfaces modbus` | **40/40** | 0/0 | M4 | `1 of 12` |
+| `--interfaces http` | 0/0 | **6/6** | M4 | `1 of 12` |
+| `--control withhold` | 0/40 | 0/6 | M3 | `0 of 12` |
+
+A guard mismatch publishes **no number at all**: `parity` becomes
+`VOID: ...` and `parity_void` is true. A derivation that cannot run at all
+reports `UNDETERMINED: ... A TOOL DEFECT, not a firmware result` — because an
+absent input is a defect in our tooling and must never be scored as a firmware
+failure.
 
 ## The controls, and both arms of each
 
 A run that cannot be made to fail proves nothing.
 
-| knob | Modbus | HTTP | rung | exit |
-| --- | --- | --- | --- | --- |
-| `--control none` (real) | 40/40 | 6/6 | **M5** | 0 |
-| `--control withhold` | 0/40 | 0/6 | **M3** | 1 |
-| `--http-rounds 0` | — | 0/0 | **M3** | 1 |
+**All five arms below were re-run live 2026-09-30 by lane `s0929-laneT`** on
+`hal-b0818-on-9bde2c0@60619b7e` (`origin/dev` `9bde2c0c` **is** an ancestor),
+ports 36150-36155, `uptime` load 10.9-13.5 throughout, with the parity fraction
+each arm printed:
+
+| knob | Modbus | HTTP | rung | exit | parity printed |
+| --- | --- | --- | --- | --- | --- |
+| `--control none` (real) | **40/40** | **6/6** | **M5** | 0 | `2 of 12 (FLOOR)` |
+| `--interfaces modbus` | **40/40** | 0/0 | **M4** | 0 | `1 of 12` |
+| `--interfaces http` | 0/0 | **6/6** | **M4** | 0 | `1 of 12` |
+| `--control withhold` | 0/40 | 0/6 | **M3** | 1 | `0 of 12` |
+| `--http-rounds 0` | **40/40** | 0/0 | **M4** | 1 | `1 of 12` |
+
+⚠ **One earlier row corrected against my own prediction.** The 2026-09-06 table
+recorded `--http-rounds 0` as rung **M3**; re-run today it is **M4** with exit 1,
+because the Modbus leg is untouched by that knob and still answers 40/40. The
+knob does what it is there for — the HTTP term goes false and the round-count
+floor is what stops `0 == 0` scoring — but the *rung* it leaves is M4, not M3.
+The old row was wrong about the rung, not about the guard.
 
 `withhold` opens every connection exactly as the real arm does, completes every
 handshake, and reads every socket — it only never transmits the request bytes.
