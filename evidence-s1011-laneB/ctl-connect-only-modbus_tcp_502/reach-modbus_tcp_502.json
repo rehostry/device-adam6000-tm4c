@@ -1,0 +1,72 @@
+{
+ "row": "device-adam6000-tm4c",
+ "entry": "modbus_tcp_502",
+ "proto": "tcp",
+ "port": 502,
+ "client": "modbus",
+ "handler_pcs": [
+  "0x3eb64"
+ ],
+ "handler_note": "Modbus PDU dispatcher: `tbh` switch of 17 cases on the function code; entry ran only in the modbus window",
+ "input": "",
+ "reached": false,
+ "live_after": true,
+ "unexplained": null,
+ "load_avg": [
+  7.86328125,
+  6.193359375,
+  6.84716796875
+ ],
+ "started": "2026-10-11T19:35:29",
+ "guest": {
+  "pid": 96084,
+  "python": "/Users/user/Development/rehostry/venvs-on-9bde2c0.noindex/adam6000-a71/bin/python",
+  "image_sha256": "5081b9fe6541e214f907895355043d7f726f3e385ddec521954745afc2b61b1d",
+  "core_unicorn_backend_sha256": "/Users/user/Development/rehostry/hal-b0818-on-9bde2c0/src/halucinator/backends/unicorn_backend.py e9af21330154ad42484002fe4c7236321925df29fdeecb7aac2d15c371f5b355",
+  "services_env": "snmp:39962:161:udp,ascii_udp:39963:1025:udp,probe5168_udp:39965:5168:udp",
+  "log": "/Users/user/Development/rehostry/device-adam6000-tm4c/evidence-s1011-laneB/ctl-connect-only-modbus_tcp_502/emulator.log.txt",
+  "keepalive": true,
+  "transport": {
+   "transport": "SocketTransport",
+   "host": "127.0.0.1",
+   "direct": false,
+   "tcp_map": {
+    "502": 39960,
+    "80": 39961
+   },
+   "udp_map": {
+    "161": 39962,
+    "1025": 39963,
+    "5168": 39965
+   }
+  }
+ },
+ "hooks_armed": true,
+ "hooks_pcs": [
+  "0x3eb64",
+  "0x36518",
+  "0x1914c",
+  "0x3e0b8"
+ ],
+ "ready": {
+  "ip_ready": true,
+  "t_ready": 1791765332.133342
+ },
+ "handler_hits_before": {
+  "0x3eb64": 0
+ },
+ "reply": {
+  "reply": ""
+ },
+ "drive_seconds": 60.0,
+ "handler_hits_delta": {
+  "0x3eb64": 0
+ },
+ "cross_hits": {},
+ "first_hit": {},
+ "process_alive": true,
+ "final_hits": {
+  "0x3eb64": 1
+ },
+ "finished": "2026-10-11T19:36:35"
+}

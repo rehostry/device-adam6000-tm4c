@@ -1,0 +1,323 @@
+HAL_LOG|WARNING|  Duplicate Intercept:
+	Old: (adam6000_tm4c_config.yaml){symbol: None, addr: 0x1010d8c, class: rehostry_adam6000_tm4c.bp_handlers.tiva_rom_api.TivaRomApi, function:rom_SysCtlPeripheralReady}
+	New: (adam6000_tm4c_bridge.yaml){symbol: None, addr: 0x1010d8c, class: rehostry_adam6000_tm4c.bp_handlers.modbus_bridge.ModbusBridge, function:rom_SysCtlPeripheralReady}
+HAL_LOG|INFO|  TivaRom: synthesising the driverlib API table at 0x01000010; unimplemented calls land on `bx lr` stubs at 0x01010000
+HAL_LOG|INFO|  TivaApb: modelling EMAC0 (Ethernet), Hibernation module (RTC + retained RAM), FLASH controller; every other page falls through to the catch-all
+HAL_LOG|INFO|  UnicornBackend: Cortex-M CPU model = UC_CPU_ARM_CORTEX_M4
+HAL_LOG|INFO|  UnicornBackend: HAL_FAST_BP -- per-address breakpoint hooks (no global per-instruction code hook)
+HAL_LOG|INFO|  AutoPeripheral: busy-wait at pc=0x0000b036 addr=0x400fe168 -> 0xffffffff (tier 0)
+HAL_LOG|INFO|  ROM: APITABLE[13] fetched (pc=0x00006eb6) -> sub-table 0x01001d00
+HAL_LOG|INFO|  ROM: table[13] entry[6] fetched (pc=0x00006ebc) -> stub 0x01010d18  == SysCtlPeripheralEnable
+HAL_LOG|INFO|  ROM: APITABLE[4] fetched (pc=0x00006ec0) -> sub-table 0x01001400
+HAL_LOG|INFO|  ROM: table[4] entry[26] fetched (pc=0x00006ec2) -> stub 0x01010468  (unidentified)
+HAL_LOG|INFO|  ROM: table[4] entry[21] fetched (pc=0x00006ed4) -> stub 0x01010454  (unidentified)
+HAL_LOG|INFO|  ROM: APITABLE[1] fetched (pc=0x00006eec) -> sub-table 0x01001100
+HAL_LOG|INFO|  ROM: table[1] entry[5] fetched (pc=0x00006ef0) -> stub 0x01010114  (unidentified)
+HAL_LOG|INFO|  ROM UARTConfigSetExpClk(base=0x4000c000, clk=0, baud=115200, config=0x60) -- the debug console
+HAL_LOG|INFO|  ROM: table[1] entry[7] fetched (pc=0x00006efe) -> stub 0x0101011c  (unidentified)
+HAL_LOG|INFO|  ROM: table[1] entry[26] fetched (pc=0x00006f16) -> stub 0x01010168  (unidentified)
+HAL_LOG|INFO|  ROM: table[1] entry[0] fetched (pc=0x00006f26) -> stub 0x01010100  (unidentified)
+HAL_LOG|INFO|  CONSOLE QualComm Project Boot Code Start
+HAL_LOG|INFO|  CONSOLE  BL: Advantech ADAM-6000D A1.03B10!! 0
+HAL_LOG|INFO|  ROM: APITABLE[17] fetched (pc=0x0000b52c) -> sub-table 0x01002100
+HAL_LOG|INFO|  ROM: table[17] entry[1] fetched (pc=0x0000b52e) -> stub 0x01011104  (unidentified)
+HAL_LOG|INFO|  ROM: table[17] entry[8] fetched (pc=0x0000b538) -> stub 0x01011120  (unidentified)
+HAL_LOG|INFO|  ROM: table[4] entry[15] fetched (pc=0x0000b53e) -> stub 0x0101043c  (unidentified)
+HAL_LOG|INFO|  ROM: table[4] entry[0] fetched (pc=0x0000b54a) -> stub 0x01010400  (unidentified)
+HAL_LOG|INFO|  ROM: table[13] entry[44] fetched (pc=0x0000b558) -> stub 0x01010db0  (unidentified)
+HAL_LOG|INFO|  ROM: APITABLE[14] fetched (pc=0x0000b560) -> sub-table 0x01001e00
+HAL_LOG|INFO|  ROM: table[14] entry[4] fetched (pc=0x0000b562) -> stub 0x01010e10  (unidentified)
+HAL_LOG|INFO|  ROM: table[14] entry[1] fetched (pc=0x0000b56a) -> stub 0x01010e04  (unidentified)
+HAL_LOG|INFO|  SPI-NOR: 8 MB, erased (0xFF) -- the vendor's web content is not shipped with this device
+HAL_LOG|INFO|  SPI-NOR: left erased (HAL_ADAM_SFLASH_BLANK=1) -- the module will report no model and no I/O points
+HAL_LOG|INFO|  ROM: APITABLE[2] fetched (pc=0x0000b63c) -> sub-table 0x01001200
+HAL_LOG|INFO|  ROM: table[2] entry[3] fetched (pc=0x0000b63e) -> stub 0x0101020c  (unidentified)
+HAL_LOG|INFO|  ROM: table[2] entry[16] fetched (pc=0x0000b646) -> stub 0x01010240  (unidentified)
+HAL_LOG|INFO|  ROM: table[4] entry[19] fetched (pc=0x0000b66e) -> stub 0x0101044c  (unidentified)
+HAL_LOG|INFO|  ROM: table[2] entry[1] fetched (pc=0x0000b7b2) -> stub 0x01010204  (unidentified)
+HAL_LOG|INFO|  ROM: table[2] entry[2] fetched (pc=0x0000b67e) -> stub 0x01010208  (unidentified)
+HAL_LOG|INFO|  ROM: table[2] entry[10] fetched (pc=0x0000b686) -> stub 0x01010228  (unidentified)
+HAL_LOG|INFO|  ROM: table[2] entry[0] fetched (pc=0x0000a16c) -> stub 0x01010200  (unidentified)
+HAL_LOG|INFO|  ROM: table[2] entry[9] fetched (pc=0x0000a174) -> stub 0x01010224  (unidentified)
+HAL_LOG|INFO|  ROM: table[2] entry[14] fetched (pc=0x0000a1d6) -> stub 0x01010238  (unidentified)
+HAL_LOG|INFO|  ROM: table[17] entry[6] fetched (pc=0x0000a452) -> stub 0x01011118  (unidentified)
+HAL_LOG|INFO|  ROM: table[17] entry[23] fetched (pc=0x0000a462) -> stub 0x0101115c  (unidentified)
+HAL_LOG|INFO|  ROM: table[17] entry[12] fetched (pc=0x0000a472) -> stub 0x01011130  (unidentified)
+HAL_LOG|INFO|  ROM: table[4] entry[14] fetched (pc=0x0000b706) -> stub 0x01010438  (unidentified)
+HAL_LOG|INFO|  CONSOLE  Boot_ SFinit() ff,ff,ff,ff,ff,ff,ff,ff,ff,ff,ff,ff,ff,ff,ff,ff,
+HAL_LOG|INFO|  CONSOLE [DownloadPage 3]:  main:0x400000  back:0xFFFFFFFF
+HAL_LOG|INFO|  ROM: table[17] entry[14] fetched (pc=0x0000a4fe) -> stub 0x01011138  (unidentified)
+HAL_LOG|INFO|  ROM: table[17] entry[0] fetched (pc=0x0000a51e) -> stub 0x01011100  (unidentified)
+HAL_LOG|INFO|  ROM: table[17] entry[20] fetched (pc=0x0000a53c) -> stub 0x01011150  (unidentified)
+HAL_LOG|INFO|  ROM: table[2] entry[12] fetched (pc=0x0000a54c) -> stub 0x01010230  (unidentified)
+HAL_LOG|INFO|  ROM: table[17] entry[5] fetched (pc=0x0000a556) -> stub 0x01011114  (unidentified)
+HAL_LOG|INFO|  ROM: table[17] entry[19] fetched (pc=0x0000a56a) -> stub 0x0101114c  (unidentified)
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 4 bytes (tx=0x2001c434 rx=0x20014469) -- first inbound bytes ffffffff
+HAL_LOG|INFO|  ROM: table[2] entry[13] fetched (pc=0x0000a58a) -> stub 0x01010234  (unidentified)
+HAL_LOG|INFO|  ROM: table[2] entry[7] fetched (pc=0x0000a5a4) -> stub 0x0101021c  (unidentified)
+HAL_LOG|INFO|  CONSOLE [BL_BackupMark]: 5a,ff,ff,ff,
+HAL_LOG|INFO|  VTOR: vector table relocated to 0x00010000 -- interrupts now dispatch through the application's table, not the bootloader's
+HAL_LOG|INFO|  AutoPeripheral: busy-wait at pc=0x000326de addr=0x400fe168 -> 0xffffffff (tier 0)
+HAL_LOG|INFO|  ROM: table[13] entry[4] fetched (pc=0x0001da74) -> stub 0x01010d10  (unidentified)
+HAL_LOG|INFO|  CONSOLE 6000_DIO V6.15B23 start!!
+HAL_LOG|INFO|  CONSOLE [SIFlashRead_s] profile=ffffffff
+HAL_LOG|INFO|  CONSOLE [SIFlashRead_s] html=ffffffff
+HAL_LOG|INFO|  CONSOLE [SIFlashRead_s] JS=ffffffff
+HAL_LOG|INFO|  CONSOLE [SIFlashRead_s] JAR=ffffffff
+HAL_LOG|INFO|  CONSOLE [SIFlashRead_s] SFLASH_PROG_START_ADDR=ffffffff
+HAL_LOG|INFO|  CONSOLE  Profi_XX: not found in flash
+HAL_LOG|INFO|  CONSOLE  GetDevInfo() Err: ulLen=-1
+HAL_LOG|INFO|  CONSOLE ---------------g_sModelInfo.ucTotal_StatusPins = 0
+HAL_LOG|INFO|  CONSOLE @0x20015e40 [ADAM6000]:  HvI[0] 0: O[0] 0:
+HAL_LOG|INFO|  FLASH: buffered write of 32 words to 0x0007c000
+HAL_LOG|INFO|  FLASH: buffered write of 32 words to 0x0007c000
+HAL_LOG|INFO|  FLASH: buffered write of 32 words to 0x0007c000
+HAL_LOG|INFO|  CONSOLE [Gen_3]usSNMPEn = 1
+HAL_LOG|INFO|  CONSOLE g_usModel = 255
+HAL_LOG|INFO|  ROM: table[4] entry[11] fetched (pc=0x0002843a) -> stub 0x0101042c  (unidentified)
+HAL_LOG|INFO|  CONSOLE hw id = 0, RTCExisted=0
+HAL_LOG|INFO|  CONSOLE sntp sync : 255
+HAL_LOG|INFO|  SysTick: enabled by the firmware (reload=4294967295)
+HAL_LOG|INFO|  CONSOLE  bEnDHCP=0
+HAL_LOG|INFO|  CONSOLE  ip=100000a, sm=ff, gw=0
+HAL_LOG|INFO|  CONSOLE MACID:0.d0.c9.fe.ff.ff
+HAL_LOG|INFO|  ROM: table[13] entry[5] fetched (pc=0x0001d50c) -> stub 0x01010d14  (unidentified)
+HAL_LOG|INFO|  ROM: table[13] entry[35] fetched (pc=0x0001d534) -> stub 0x01010d8c  (unidentified)
+HAL_LOG|INFO|  Bridge[modbus]: tcp/39960 -- carried over modelled Ethernet from 10.0.0.2 (02:00:00:5e:10:02) to 10.0.0.1:502
+HAL_LOG|INFO|  Bridge[http]: tcp/39961 -- carried over modelled Ethernet from 10.0.0.3 (02:00:00:5e:10:03) to 10.0.0.1:80
+HAL_LOG|INFO|  Bridge[snmp]: udp/39962 -- carried over modelled Ethernet from 10.0.0.24 to 10.0.0.1:161
+HAL_LOG|INFO|  Bridge[ascii_udp]: udp/39963 -- carried over modelled Ethernet from 10.0.0.25 to 10.0.0.1:1025
+HAL_LOG|INFO|  Bridge[probe5168_udp]: udp/39965 -- carried over modelled Ethernet from 10.0.0.26 to 10.0.0.1:5168
+HAL_LOG|INFO|  ROM: APITABLE[42] fetched (pc=0x0001d54c) -> sub-table 0x01003a00
+HAL_LOG|INFO|  ROM: table[42] entry[12] fetched (pc=0x0001d54e) -> stub 0x01012a30  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[8] fetched (pc=0x0001d566) -> stub 0x01012a20  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[4] fetched (pc=0x0001d57c) -> stub 0x01012a10  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[2] fetched (pc=0x0001d58a) -> stub 0x01012a08  (unidentified)
+HAL_LOG|INFO|  CONSOLE [lwIPInit] g_ui32IPMode = 0, g_ui32IPAddr=100000a, g_ui32NetMask=ff, g_ui32GWAddr=0
+HAL_LOG|INFO|  ROM: table[14] entry[2] fetched (pc=0x0001c930) -> stub 0x01010e08  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[1] fetched (pc=0x0001ca76) -> stub 0x01012a04  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[22] fetched (pc=0x0001ca2e) -> stub 0x01012a58  (unidentified)
+HAL_LOG|INFO|  EMAC: descriptor list registered at 0x20020f60
+HAL_LOG|INFO|  ROM: table[42] entry[31] fetched (pc=0x0001ca38) -> stub 0x01012a7c  (unidentified)
+HAL_LOG|INFO|  EMAC: descriptor list registered at 0x20020c00
+HAL_LOG|INFO|  ROM: table[42] entry[15] fetched (pc=0x0001ca90) -> stub 0x01012a3c  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[16] fetched (pc=0x0001caba) -> stub 0x01012a40  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[42] fetched (pc=0x0001caf6) -> stub 0x01012aa8  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[7] fetched (pc=0x0001cb10) -> stub 0x01012a1c  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[0] fetched (pc=0x0001cb1a) -> stub 0x01012a00  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[9] fetched (pc=0x0001cb24) -> stub 0x01012a24  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[33] fetched (pc=0x0001cb2c) -> stub 0x01012a84  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[24] fetched (pc=0x0001cb36) -> stub 0x01012a60  (unidentified)
+HAL_LOG|INFO|  ROM: table[42] entry[11] fetched (pc=0x0001cb42) -> stub 0x01012a2c  (unidentified)
+HAL_LOG|INFO|  NVIC: firmware armed IRQ 40
+HAL_LOG|INFO|  ROM: table[42] entry[32] fetched (pc=0x0001cd4e) -> stub 0x01012a80  (unidentified)
+HAL_LOG|INFO|  CONSOLE IP ready.
+HAL_LOG|INFO|  CONSOLE ucReadCommunity:public ucWriteCommunity:private ucTrapCommunity:public
+HAL_LOG|INFO|  CONSOLE [snmp] enable snmp = 1
+HAL_LOG|INFO|  EMAC: ring at 0x20020f60 first words: 80000000 00004300 200122cc 20020f84 00000000 00000000 00000000 00000000 200122bc 80000000 00004300 20011fbc 20020fa8 00000000 00000000 00000000
+HAL_LOG|INFO|  EMAC: ring at 0x20020c00 first words: f0d00000 0000002a 20003792 20020c24 00000000 00000000 00000000 00000000 20003780 f0d00000 0000002a 200037d6 20020c48 00000000 00000000 00000000
+HAL_LOG|INFO|  EMAC: ring at 0x20020f60 is 24 descriptors (followed the firmware's own chain, 36 bytes apart)
+HAL_LOG|INFO|  EMAC: ring at 0x20020c00 is 24 descriptors (followed the firmware's own chain, 36 bytes apart)
+HAL_LOG|INFO|  EMAC TX #1: 42 bytes ffffffffffff00d0c9feffff0806000108000604000100d0c9feffff0a000001
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.1
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.1
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.1
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.1
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.1
+HAL_LOG|INFO|  EMAC TX #2: 42 bytes ffffffffffff00d0c9feffff0806000108000604000100d0c9feffff0a000001
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.1
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.1
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.1
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.1
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.1
+HAL_LOG|INFO|  CONSOLE [DownloadPage 1]: main:0xffffffff  back:0x400000
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 20 bytes (tx=0x200285d8 rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 4 bytes (tx=0x200285d4 rx=0x20024666) -- first inbound bytes ffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 4 bytes (tx=0x200000a4 rx=0x20024666) -- first inbound bytes ffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 4 bytes (tx=0x200285d0 rx=0x20024666) -- first inbound bytes ffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  EMAC RX #1: 60 bytes into 0x200122cc
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  ROM: table[42] entry[20] fetched (pc=0x0001cee6) -> stub 0x01012a50  (unidentified)
+HAL_LOG|INFO|  NVIC: firmware armed IRQ 40
+HAL_LOG|INFO|  EMAC TX #3: 42 bytes ffffffffffff00d0c9feffff0806000108000604000100d0c9feffff0a000001
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.25
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.25
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.25
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.25
+HAL_LOG|INFO|  PEER saw: ARP dst=ff:ff:ff:ff:ff:ff src=00:d0:c9:fe:ff:ff op=1 target=10.0.0.25
+HAL_LOG|INFO|  EMAC RX #2: 60 bytes into 0x20011fbc
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  NVIC: firmware armed IRQ 40
+HAL_LOG|INFO|  EMAC TX #4: 50 bytes 0200005e102500d0c9feffff08004500002400000000ff1100000a0000010a00
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:25 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  WIRE: device sent proto=17 to 10.0.0.25 port 42100 (first time)
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:02
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:25 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:03
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:25 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:24
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:25 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER[svc5]: UDP 1025->42100 len=8
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:25 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:26
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  uDMA: SSI3 transfer of 256 bytes (tx=0x200284fc rx=0x20024666) -- first inbound bytes ffffffffffffffff
+HAL_LOG|INFO|  NVIC: firmware armed IRQ 40
+HAL_LOG|INFO|  NVIC STIR: firmware triggered IRQ 40 in software (pc=0x0001d5e0)
+HAL_LOG|INFO|  NVIC STIR: firmware triggered IRQ 40 in software (pc=0x0001d5e0)
+HAL_LOG|INFO|  NVIC STIR: firmware triggered IRQ 40 in software (pc=0x0001d5e0)
+HAL_LOG|INFO|  EMAC RX #3: 60 bytes into 0x20011cac
+HAL_LOG|INFO|  Bridge[modbus]: opening a connection to 10.0.0.1:502 from port 40001
+HAL_LOG|INFO|  PEER -> device: TCP flags=0x02 seq=0x1000 len=0
+HAL_LOG|INFO|  EMAC RX #4: 60 bytes into 0x2001199c
+HAL_LOG|INFO|  NVIC: firmware armed IRQ 40
+HAL_LOG|INFO|  EMAC TX #5: 42 bytes 0200005e100200d0c9feffff0806000108000604000200d0c9feffff0a000001
+HAL_LOG|INFO|  PEER saw: ARP dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff op=2 target=10.0.0.2
+HAL_LOG|INFO|  PEER saw: ARP dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff op=2 target=10.0.0.2
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:03
+HAL_LOG|INFO|  PEER saw: ARP dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff op=2 target=10.0.0.2
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:24
+HAL_LOG|INFO|  PEER saw: ARP dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff op=2 target=10.0.0.2
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:25
+HAL_LOG|INFO|  PEER saw: ARP dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff op=2 target=10.0.0.2
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:26
+HAL_LOG|INFO|  EMAC TX #6: 58 bytes 0200005e100200d0c9feffff08004500002c00010000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  WIRE: device sent proto=6 to 10.0.0.2 port 40001 (first time)
+HAL_LOG|INFO|  PEER: TCP 502->40001 [SYN|ACK] seq=0x196e ack=0x1001 len=0 win=2560 (state SYN_SENT, our snd_nxt=0x1001)
+HAL_LOG|INFO|  PEER -> device: TCP flags=0x10 seq=0x1001 len=0
+HAL_LOG|INFO|  PEER -> device: TCP flags=0x18 seq=0x1001 len=12
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:03
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:24
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:25
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:26
+HAL_LOG|INFO|  EMAC RX #5: 60 bytes into 0x2001168c
+HAL_LOG|INFO|  EMAC RX #6: 66 bytes into 0x2001137c
+HAL_LOG|INFO|  PEER: retransmit #1 of 12 bytes at seq=0x1001
+HAL_LOG|INFO|  PEER -> device: TCP flags=0x18 seq=0x1001 len=12
+HAL_LOG|INFO|  EMAC RX #7: 66 bytes into 0x2001106c
+HAL_LOG|INFO|  PEER: retransmit #2 of 12 bytes at seq=0x1001
+HAL_LOG|INFO|  PEER -> device: TCP flags=0x18 seq=0x1001 len=12
+HAL_LOG|INFO|  EMAC RX #8: 66 bytes into 0x20010d5c
+HAL_LOG|INFO|  PEER: retransmit #3 of 12 bytes at seq=0x1001
+HAL_LOG|INFO|  PEER -> device: TCP flags=0x18 seq=0x1001 len=12
+HAL_LOG|INFO|  EMAC RX #9: 66 bytes into 0x20010a4c
+HAL_LOG|INFO|  PEER -> device: TCP flags=0x18 seq=0x1001 len=12
+HAL_LOG|INFO|  EMAC RX #10: 66 bytes into 0x2001073c
+HAL_LOG|INFO|  PEER -> device: TCP flags=0x18 seq=0x1001 len=12
+HAL_LOG|INFO|  EMAC RX #11: 66 bytes into 0x2001042c
+HAL_LOG|INFO|  EMAC RX #12: 66 bytes into 0x2001011c
+HAL_LOG|INFO|  EMAC RX #13: 66 bytes into 0x2000fe0c
+HAL_LOG|INFO|  EMAC RX #14: 66 bytes into 0x2000fafc
+HAL_LOG|INFO|  EMAC RX #15: 66 bytes into 0x2000f7ec
+HAL_LOG|INFO|  EMAC RX #16: 66 bytes into 0x2000f4dc
+HAL_LOG|INFO|  EMAC RX #17: 66 bytes into 0x2000f1cc
+HAL_LOG|INFO|  EMAC RX #18: 66 bytes into 0x2000eebc
+HAL_LOG|INFO|  EMAC RX #19: 66 bytes into 0x2000ebac
+HAL_LOG|INFO|  EMAC RX #20: 66 bytes into 0x2000e89c
+HAL_LOG|INFO|  EMAC RX #21: 66 bytes into 0x2000e58c
+HAL_LOG|INFO|  EMAC RX #22: 66 bytes into 0x2000e27c
+HAL_LOG|INFO|  NVIC: firmware armed IRQ 40
+HAL_LOG|INFO|  EMAC TX #7: 63 bytes 0200005e100200d0c9feffff08004500003100020000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: TCP 502->40001 [ACK|PSH] seq=0x196f ack=0x100d len=9 win=2548 (state ESTABLISHED, our snd_nxt=0x100d)
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:03
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:24
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:25
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:26
+HAL_LOG|INFO|  EMAC TX #8: 54 bytes 0200005e100200d0c9feffff08004500002800030000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: TCP 502->40001 [ACK] seq=0x1978 ack=0x100d len=0 win=2548 (state ESTABLISHED, our snd_nxt=0x100d)
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:03
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:24
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:25
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:26
+HAL_LOG|INFO|  EMAC TX #9: 54 bytes 0200005e100200d0c9feffff08004500002800040000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: TCP 502->40001 [ACK] seq=0x1978 ack=0x100d len=0 win=2548 (state ESTABLISHED, our snd_nxt=0x100d)
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:03
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:24
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:25
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:26
+HAL_LOG|INFO|  EMAC TX #10: 54 bytes 0200005e100200d0c9feffff08004500002800050000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: TCP 502->40001 [ACK] seq=0x1978 ack=0x100d len=0 win=2548 (state ESTABLISHED, our snd_nxt=0x100d)
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:03
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:24
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:25
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:26
+HAL_LOG|INFO|  EMAC TX #11: 54 bytes 0200005e100200d0c9feffff08004500002800060000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: TCP 502->40001 [ACK] seq=0x1978 ack=0x100d len=0 win=2548 (state ESTABLISHED, our snd_nxt=0x100d)
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:03
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:24
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:25
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:26
+HAL_LOG|INFO|  EMAC TX #12: 54 bytes 0200005e100200d0c9feffff08004500002800070000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: TCP 502->40001 [ACK] seq=0x1978 ack=0x100d len=0 win=2548 (state ESTABLISHED, our snd_nxt=0x100d)
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:03
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:24
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:25
+HAL_LOG|INFO|  PEER saw: IPv4 dst=02:00:00:5e:10:02 src=00:d0:c9:fe:ff:ff
+HAL_LOG|INFO|  PEER: ignored -- not addressed to 02:00:00:5e:10:26
+HAL_LOG|INFO|  EMAC TX #13: 54 bytes 0200005e100200d0c9feffff08004500002800080000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER: TCP 502->40001 [ACK] seq=0x1978 ack=0x100d len=0 win=2548 (state ESTABLISHED, our snd_nxt=0x100d)
+HAL_LOG|INFO|  EMAC RX #23: 60 bytes into 0x2000df6c
+HAL_LOG|INFO|  CONSOLE Backup_FW_Image success  15ms
+HAL_LOG|INFO|  NVIC: firmware armed IRQ 40
+HAL_LOG|INFO|  EMAC TX #14: 54 bytes 0200005e100200d0c9feffff08004500002800090000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER: TCP 502->40001 [ACK] seq=0x1978 ack=0x100d len=0 win=2548 (state ESTABLISHED, our snd_nxt=0x100d)
+HAL_LOG|INFO|  EMAC TX #15: 54 bytes 0200005e100200d0c9feffff080045000028000a0000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER: TCP 502->40001 [ACK] seq=0x1978 ack=0x100d len=0 win=2548 (state ESTABLISHED, our snd_nxt=0x100d)
+HAL_LOG|INFO|  EMAC TX #16: 54 bytes 0200005e100200d0c9feffff080045000028000b0000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER: TCP 502->40001 [ACK] seq=0x1978 ack=0x100d len=0 win=2548 (state ESTABLISHED, our snd_nxt=0x100d)
+HAL_LOG|INFO|  EMAC TX #17: 54 bytes 0200005e100200d0c9feffff080045000028000c0000ff0600000a0000010a00
+HAL_LOG|INFO|  PEER: TCP 502->40001 [ACK] seq=0x1978 ack=0x100d len=0 win=2548 (state ESTABLISHED, our snd_nxt=0x100d)
+HAL_LOG|INFO|  EMAC TX #18: 54 bytes 0200005e100200d0c9feffff080045000028000d0000ff0600000a0000010a00
+HAL_LOG|INFO|  EMAC TX #19: 54 bytes 0200005e100200d0c9feffff080045000028000e0000ff0600000a0000010a00
+HAL_LOG|INFO|  EMAC TX #20: 54 bytes 0200005e100200d0c9feffff080045000028000f0000ff0600000a0000010a00
+HAL_LOG|INFO|  EMAC TX #21: 54 bytes 0200005e100200d0c9feffff08004500002800100000ff0600000a0000010a00
+HAL_LOG|INFO|  NVIC: firmware armed IRQ 40

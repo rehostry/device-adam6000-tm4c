@@ -1,0 +1,2 @@
+BOOT pid=89803 ports=[39960, 39961, 39962, 39963, 39965, 39978, 39979]
+RESULT {"entry": "gcl_peer_service", "reached": true, "live_after": true, "handler_hits_delta": {"0x3e0b8": 1}, "cross_hits": {}, "reply": {"replies": ["213031363030300d"]}, "harness_error": null, "ready_error": null, "error": null, "unexplained": null}

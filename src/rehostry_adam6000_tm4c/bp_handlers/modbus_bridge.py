@@ -155,6 +155,9 @@ class ModbusBridge(BPHandler):
         """
         for svc in self.services:
             peer = svc.peer
+            if getattr(svc, "want_close", False) and not svc.want_reconnect:
+                svc.want_close = False
+                peer.close()
             if svc.want_reconnect:
                 svc.want_reconnect = False
                 svc.local_port += 1
@@ -268,6 +271,9 @@ class ModbusBridge(BPHandler):
                 with svc.lock:
                     if conn in svc.clients:
                         svc.clients.remove(conn)
+                    if (os.environ.get("HAL_ADAM_FIN_ON_CLOSE") == "1"
+                            and not svc.clients):
+                        svc.want_close = True       # done from `pump`
                 try:
                     conn.close()
                 except OSError:

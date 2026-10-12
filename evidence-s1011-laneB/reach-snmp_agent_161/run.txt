@@ -1,0 +1,2 @@
+BOOT pid=95071 ports=[39960, 39961, 39962, 39963, 39965, 39978, 39979]
+RESULT {"entry": "snmp_agent_161", "reached": true, "live_after": true, "handler_hits_delta": {"0x1914c": 1}, "cross_hits": {}, "reply": {"replies": ["3082003b02010004067075626c6963a282002c020224680201000201003082001e301c06082b0601020101010004104144414d2d363030305f536572696573"]}, "harness_error": null, "ready_error": null, "error": null, "unexplained": null}

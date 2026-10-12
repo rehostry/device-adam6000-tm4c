@@ -1,6 +1,130 @@
-<!-- rehostry-census: milestone=M5 landed=true verdict=M4-OK verified=2026-09-30 method=live-run n=2of12 note=M8-DEFINED-and-UNMET-2of12-FLOOR;denominator-DERIVED-from-six-image-declaration-blocks-was-a-hardcoded-4;M5-operational-test-run-live-both-ways;two-servers-Modbus502-HTTP80-one-EMAC -->
+<!-- rehostry-census: milestone=M5 landed=true verdict=M4-OK verified=2026-09-30 method=live-run n=2of12 fuzz_reach=5of10 fuzz_live=5of5 note=M8-DEFINED-and-UNMET-2of12-FLOOR;denominator-DERIVED-from-six-image-declaration-blocks-was-a-hardcoded-4;M5-operational-test-run-live-both-ways;two-servers-Modbus502-HTTP80-one-EMAC -->
 <!-- Copyright 2026 Christopher Wright; SPDX-License-Identifier: AGPL-3.0-or-later -->
 # STATUS — device-adam6000-tm4c  (**M5**)
+
+## 2026-10-11 (lane s1011-laneB) — FUZZ REACH `5of10`, live `5of5`: Modbus, HTTP, SNMP and the ASCII/GCL socket each shown hitting their own handler on a fresh boot; the guest used to go deaf after its first minute and no longer does
+
+**Header tokens added: `fuzz_reach=5of10 fuzz_live=5of5`. `n=` and `milestone=` are untouched.**
+Fuzz reach is the batch-s1011 measure (`scratch-batch-s1011/BRIEF.md`), not M8:
+an entry counts only when one well-formed request on a **fresh boot, that entry
+driven first,** is shown hitting **that entry's own handler address** (a code
+hook), and a known-good round trip still works afterwards. A reply is recorded
+as corroboration only.
+
+### How this row's network reaches the host — read from the row
+
+**Forwarded host ports.** `tiva_emac` moves frames through the guest's DMA
+rings; `net_peer` models other machines on the segment; the intercept
+`modbus_bridge.ModbusBridge` binds one `127.0.0.1` port per service and relays
+it through that service's own modelled peer, pumped from the firmware's own
+ROM calls. rehostry-peers' `SocketTransport` with a port map is the whole
+client side. Before this batch only tcp/502 and tcp/80 could be bridged and the
+peer had no UDP. Added (all OFF unless asked for, so the graded runs are
+unchanged):
+
+* `HAL_ADAM_SERVICES="name:hostport:devport[:udp],..."` — any further TCP/UDP
+  device port, each on its own peer (`svc4`..`svc15`, own MAC and IP);
+* UDP and ICMP-unreachable in `net_peer`, plus a `WIRE:` log line for every new
+  (proto, destination, port) the **device** sends — the outbound-client census below;
+* `HAL_ADAM_FIN_ON_CLOSE=1` — a host-side close becomes a FIN to the device;
+* `HAL_ADAM_DELAY_TICK=1` + the `hal_delay_yield`/`main_idle_park` intercepts
+  (an overlay the adapter writes) — see the wall below.
+
+### ⚠ A wall the graded runs never met: the guest goes deaf ~1 minute after `IP ready.`
+
+Measured, two boots (`scratch-batch-s1011/laneB/adam-seq1`, `adam-disc2`): a
+Modbus request at +30 s answers; once the console prints `Backup_FW_Image
+success` **nothing** answers again — HTTP, SNMP, UDP and a second Modbus
+connection all time out, and block coverage shows a 28-block loop running
+9.4 M times with no ROM call in it. That loop is the firmware's millisecond
+delay (`0x1E87A`..`0x1E898`); this rehost paces both SysTick and the network
+pump off ROM calls, so a delay that makes none never ends. `delay_yield`
+already ticks there — but only on the provisioned path, and its intercept is
+registered only by the profile overlay. With the keepalive overlay and
+`HAL_ADAM_DELAY_TICK=1`, HTTP answered after the backup (`adam-seq2`), and every
+entry below ran on a guest past that point. **The graded attack never saw this
+because it finishes inside the first minute.** Not a firmware finding: a pacing
+gap in this rehost. The row's own note warns that ticking there once made
+Modbus flaky on the unprovisioned build; 5 of 5 Modbus/liveness exchanges in
+this lane were clean, which is a small sample, not a refutation.
+
+A second harness defect, found by a control: after a connect-only control on
+tcp/80 the HTTP **liveness** check failed (`run1-before-fin-on-close/`), because
+the bridge never told the device a host client had gone, and this firmware's
+servers then hold the half-open connection. `HAL_ADAM_FIN_ON_CLOSE` fixed it;
+**every result below is from the re-run with it on** — the first run's
+records are kept under `evidence-s1011-laneB/run1-before-fin-on-close/` and
+agree on every `reached` value.
+
+### The entries (inventory: 12, of which 10 accept input)
+
+Image `5081b9fe6541e214f907895355043d7f726f3e385ddec521954745afc2b61b1d`
+(equal to `INVENTORY-PREREG.json`'s pin), every run. Child core
+`hal-b0818-on-9bde2c0/src/halucinator/backends/unicorn_backend.py` sha256
+`e9af21330154ad42…` (venv `venvs-on-9bde2c0.noindex/adam6000-a71`, the one the
+row's last graded run used). Load 2.8–7.9 across the runs; no verdict below is
+timing-dependent (each is a hit count, not a deadline).
+
+The service ports are the image's own defaults, **read live** from
+`g_sDevSetting` (`0x200125D0`) with a memory peek, at the offsets the image's
+own config-JSON formatter (`0x20228`, format string `0x66568`) reads:
+`DSport=5168 GCLport=1025 NetDiag=1(flag) MBport=502 Webport=80`.
+
+| entry | handler (hooked) | reached | hits | live after | reply (corroboration) | connect-only control |
+|---|---|---|---|---|---|---|
+| `modbus_tcp_502` | `0x3EB64` Modbus PDU dispatcher (`tbh`, 17 cases on the function code) | **yes** | 1 | **yes** | `01 83 02` exception 2 | **0 hits** |
+| `http_config_server_80` | `0x36518` request parser (compares against the image's `GET /`,`HEAD /`,`POST /`,`OPTIONS /` table at `0x669E8`) | **yes** | 1 | **yes** | `404`, `Server: ADAM-6000/8.1.0019` | **0 hits** |
+| `snmp_agent_161` | `0x1914C` SNMP message handler (calls the two functions that ran only in the SNMP window) | **yes** | 1 | **yes** | GetResponse, sysDescr `ADAM-6000_Series` | n/a (UDP) |
+| `ascii_command_service` (udp/1025) | `0x3E0B8` ASCII dispatcher (checks address `01` and leading `# $ % ? @`) | **yes** | 1 | **yes** | `$01M\r` → `!016000\r` | n/a (UDP) |
+| `gcl_peer_service` (udp/GCLport) | `0x3E0B8` — **the same handler** | **yes** | 1 | **yes** | same | n/a |
+| `netdiag_service` | — | no | | | | **unmeasured**: `NetDiag` is an enable FLAG in the config struct; no port or socket for it was identified |
+| `sntp_client`, `mqtt_client`, `azure_iothub_client`, `dhcp_client` (outbound; the server's reply is the input) | — | no | | | | the device **never initiates them** in this configuration: the `WIRE:` census over seven boots (2–5 min each) shows only replies to our own peers. They need provisioning (`bEnDHCP`, `ucEnMqtt`, an SNTP server) AND a host-side server |
+| `snmp_trap_client`, `data_stream_push` | — | — | | | | **not-a-target**: emit-only (outbound, no input) |
+
+**`gcl_peer_service` and `ascii_command_service` are ONE observation.** The
+only socket bound on GCLport is the receive loop at `0x4698C`
+(`recvfrom` → `0x3E0B8` → `sendto`, port read from `g_sDevSetting+0x126`), so
+both inventory entries land in one handler. A reader who collapses them gets
+**4 of 9**.
+
+Liveness for SNMP and the UDP socket is the Modbus round trip on the same EMAC
+and lwIP (a request with function `0x41` must come back as exception 1); for
+Modbus and HTTP it is their own (Modbus on the SAME connection, because this
+firmware serves one Modbus client at a time: a second connection after the
+first was dropped host-side got no answer in 150 s, `adam-seq2`).
+
+**Attribution.** Every run hooks all four handler addresses; `cross_hits` was
+empty in all seven runs, so no entry's request reached another entry's
+handler. The two TCP connect-only controls are the control that moves the
+answer: same boot shape, zero payload bytes, handler hits **0**.
+
+### Fuzzer entry points
+
+```
+# one input, fresh boot, handler-hit + liveness reported (JSON record):
+../.venv-dev/bin/python tools/peers_adapter.py fuzz <entry> <hexbytes> --out DIR
+# e.g.  fuzz ascii_command_service 2430314d0d --out /path
+```
+
+From Python, with a booted guest kept between inputs (reboots only when
+liveness fails): `rehostry_peers.adapter.FuzzSession(AdamAdapter(), "<entry>",
+workdir).run(data)` → `{reached, hits, reply, live, rebooted}`. rehostry-peers
+is imported by **path insert** (`REHOSTRY_PEERS_SRC`, default
+`../rehostry-peers/src`); the emulator child gets it on `PYTHONPATH`. Ports
+39960-39965 and 39978/39979 (lane s1011-laneB's block).
+
+### Not measured
+
+* The provisioned path (device profile) and its two walls — not touched.
+* NetDiag's transport.
+* Any outbound client with a server present.
+* Whether the Modbus flakiness the row once saw with delay ticking recurs over
+  a long campaign.
+
+Evidence: `evidence-s1011-laneB/` (`reach-*/reach-*.json`, `ctl-connect-only-*/`,
+emulator logs). Discovery runs (coverage windows, the deafness boots):
+`scratch-batch-s1011/laneB/adam-*`.
+
 
 **Milestone reached: M5 — two of the device's own servers each complete a
 protocol round trip, and each does so with the other switched off.** The

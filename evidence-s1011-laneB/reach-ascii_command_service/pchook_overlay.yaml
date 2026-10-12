@@ -1,0 +1,10 @@
+peripherals:
+  rehostry_pchook:
+    base_addr: 0x60000000
+    size: 0x1000
+    permissions: rw-
+    emulate: rehostry_peers.guesthook.PcHook
+    properties:
+      pcs: "0x3eb64,0x36518,0x1914c,0x3e0b8"
+      out: "/Users/user/Development/rehostry/device-adam6000-tm4c/evidence-s1011-laneB/reach-ascii_command_service/hits.json"
+      trace: 0

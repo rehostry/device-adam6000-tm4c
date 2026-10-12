@@ -1,0 +1,2 @@
+BOOT pid=94388 ports=[39960, 39961, 39962, 39963, 39965, 39978, 39979]
+RESULT {"entry": "modbus_tcp_502", "reached": true, "live_after": true, "handler_hits_delta": {"0x3eb64": 1}, "cross_hits": {}, "reply": {"tid": 4097, "function": 3, "exception": 2, "raw": "100100000003018302"}, "harness_error": null, "ready_error": null, "error": null, "unexplained": null}

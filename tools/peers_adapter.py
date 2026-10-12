@@ -72,8 +72,33 @@ EXTRA: Dict[str, tuple] = {
 }
 PCHOOK_BASE = 0x60000000          # nothing is mapped there on this board
 
-HANDLERS: Dict[str, List[int]] = {}
-HANDLER_NOTES: Dict[str, str] = {}
+HANDLERS: Dict[str, List[int]] = {
+    "modbus_tcp_502": [0x0003EB64],
+    "http_config_server_80": [0x00036518],
+    "snmp_agent_161": [0x0001914C],
+    "ascii_command_service": [0x0003E0B8],
+    "gcl_peer_service": [0x0003E0B8],
+}
+#: Thumb function entries (r2 `aaa`), each one whose entry ran ONLY in that
+#: service's coverage window (adam-disc3: idle + 5 windows, one boot).
+HANDLER_NOTES: Dict[str, str] = {
+    "modbus_tcp_502": "Modbus PDU dispatcher: `tbh` switch of 17 cases on "
+                      "the function code; entry ran only in the modbus window",
+    "http_config_server_80": "HTTP request parser: compares the request "
+                             "against the image's 'GET /','HEAD /','POST /',"
+                             "'OPTIONS /' table (literal 0x669E8)",
+    "snmp_agent_161": "SNMP message handler: calls the two large functions "
+                      "(0x19750, 0x1A16C) that ran only in the snmp window; "
+                      "no string anchor",
+    "ascii_command_service": "ASCII command dispatcher: checks the '01' "
+                             "address and the leading '#','$','%','?','@'; "
+                             "called from the udp/GCLport receive loop "
+                             "0x4698C",
+    "gcl_peer_service": "SAME handler as ascii_command_service: the only "
+                        "socket bound on GCLport (g_sDevSetting+0x126 = 1025) "
+                        "is the 0x4698C receive loop, which hands every "
+                        "datagram to 0x3E0B8. One observation, two entries",
+}
 
 
 def _hex(b: bytes, n: int = 200) -> str:
@@ -89,31 +114,34 @@ def transport() -> SocketTransport:
 
 
 # ---------------------------------------------------------------- drivers
+#: ONE Modbus connection per guest, kept open. The bridge does not carry a
+#: host-side close to the device (no FIN), and the firmware serves one
+#: Modbus client at a time: measured, a second connection after the first was
+#: dropped host-side got no answer in 150 s. So drive, inject and liveness
+#: share one connection.
+_MB: Dict[int, "modbus.ModbusTcpClient"] = {}
+
+
+def _mb(t) -> "modbus.ModbusTcpClient":
+    c = _MB.get(id(t))
+    if c is None:
+        c = _MB[id(t)] = modbus.ModbusTcpClient(t, 502, timeout=150)
+    return c
+
+
 def _mb_drive(t):
-    c = modbus.ModbusTcpClient(t, 502, timeout=150)
-    try:
-        r = c.request(modbus.read_holding(0, 4))
-        return {"tid": r.tid, "function": r.function,
-                "exception": r.exception, "raw": _hex(r.raw)}
-    finally:
-        c.close()
+    r = _mb(t).request(modbus.read_holding(0, 4))
+    return {"tid": r.tid, "function": r.function,
+            "exception": r.exception, "raw": _hex(r.raw)}
 
 
 def _mb_inject(t, data):
-    c = modbus.ModbusTcpClient(t, 502, timeout=60)
-    try:
-        return {"reply": _hex(c.raw(data))}
-    finally:
-        c.close()
+    return {"reply": _hex(_mb(t).raw(data, timeout=60))}
 
 
 def _mb_live(t) -> bool:
-    c = modbus.ModbusTcpClient(t, 502, timeout=90)
-    try:
-        r = c.request(bytes([0x41, 0, 0, 0, 1]))    # not a Modbus function
-        return r.function == 0x41 and r.exception == 1
-    finally:
-        c.close()
+    r = _mb(t).request(bytes([0x41, 0, 0, 0, 1]))    # not a Modbus function
+    return r.function == 0x41 and r.exception == 1
 
 
 def _http_drive(t):
@@ -172,23 +200,45 @@ def services() -> List[A.Service]:
     d, i = _udp(1025, b"$01M\r")
     add("ascii_command_service", "udp", 1025, "raw-udp", d, i,
         _mb_as_liveness)
+    d, i = _udp(1025, b"$01M\r")
+    add("gcl_peer_service", "udp", 1025, "raw-udp", d, i, _mb_as_liveness)
     d, i = _udp(5168, b"rehostry-probe")
     add("probe_udp_5168", "udp", 5168, "raw-udp", d, i, _mb_as_liveness)
     return out
 
 
 # ---------------------------------------------------------------- boot
-def _assert_ports_free(ports) -> None:
+def _assert_ports_free(ports, wait: float = 120.0) -> None:
+    """Nothing may LISTEN on our TCP ports or hold our UDP ports. A TCP port
+    in TIME_WAIT from the previous boot is not "held" (the bridge binds with
+    SO_REUSEADDR); measured: the first sequential run tripped on exactly
+    that. A listener is detected by connecting to it."""
+    end = time.time() + wait
     for p in ports:
         assert PORT_LO <= p <= PORT_HI, p
-        for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
-            s = socket.socket(socket.AF_INET, kind)
+        while True:
+            held = None
+            c = socket.socket()
+            c.settimeout(1)
             try:
-                s.bind(("127.0.0.1", p))
-            except OSError as exc:
-                raise RuntimeError("port %d held: %s" % (p, exc))
+                c.connect(("127.0.0.1", p))
+                held = "something LISTENs on tcp/%d" % p
+            except OSError:
+                pass
             finally:
-                s.close()
+                c.close()
+            u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                u.bind(("127.0.0.1", p))
+            except OSError as exc:
+                held = "udp/%d held: %s" % (p, exc)
+            finally:
+                u.close()
+            if not held:
+                break
+            if time.time() > end:
+                raise RuntimeError(held)
+            time.sleep(2)
 
 
 class AdamAdapter(A.RowAdapter):
@@ -224,7 +274,9 @@ class AdamAdapter(A.RowAdapter):
         env = spawn.spawn_env(extra={
             "HAL_ADAM_BRIDGE_PORT": str(MODBUS_HOST),
             "HAL_ADAM_HTTP_BRIDGE_PORT": str(HTTP_HOST),
-            "HAL_ADAM_SERVICES": svc})
+            "HAL_ADAM_SERVICES": svc,
+            # a host close becomes a FIN to the device (see net_peer.close)
+            "HAL_ADAM_FIN_ON_CLOSE": "1"})
         env["PYTHONPATH"] = PEERS_SRC
         argv = spawn.spawn_argv(python=self.python, bridge=True,
                                 rx_port=RX_PORT, tx_port=TX_PORT)

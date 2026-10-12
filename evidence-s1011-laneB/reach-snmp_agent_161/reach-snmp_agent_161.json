@@ -1,0 +1,87 @@
+{
+ "row": "device-adam6000-tm4c",
+ "entry": "snmp_agent_161",
+ "proto": "udp",
+ "port": 161,
+ "client": "snmp",
+ "handler_pcs": [
+  "0x1914c"
+ ],
+ "handler_note": "SNMP message handler: calls the two large functions (0x19750, 0x1A16C) that ran only in the snmp window; no string anchor",
+ "input": "wellformed",
+ "reached": true,
+ "live_after": true,
+ "unexplained": null,
+ "load_avg": [
+  5.92626953125,
+  5.92529296875,
+  6.9296875
+ ],
+ "started": "2026-10-11T19:33:04",
+ "guest": {
+  "pid": 95071,
+  "python": "/Users/user/Development/rehostry/venvs-on-9bde2c0.noindex/adam6000-a71/bin/python",
+  "image_sha256": "5081b9fe6541e214f907895355043d7f726f3e385ddec521954745afc2b61b1d",
+  "core_unicorn_backend_sha256": "/Users/user/Development/rehostry/hal-b0818-on-9bde2c0/src/halucinator/backends/unicorn_backend.py e9af21330154ad42484002fe4c7236321925df29fdeecb7aac2d15c371f5b355",
+  "services_env": "snmp:39962:161:udp,ascii_udp:39963:1025:udp,probe5168_udp:39965:5168:udp",
+  "log": "/Users/user/Development/rehostry/device-adam6000-tm4c/evidence-s1011-laneB/reach-snmp_agent_161/emulator.log.txt",
+  "keepalive": true,
+  "transport": {
+   "transport": "SocketTransport",
+   "host": "127.0.0.1",
+   "direct": false,
+   "tcp_map": {
+    "502": 39960,
+    "80": 39961
+   },
+   "udp_map": {
+    "161": 39962,
+    "1025": 39963,
+    "5168": 39965
+   }
+  }
+ },
+ "hooks_armed": true,
+ "hooks_pcs": [
+  "0x3eb64",
+  "0x36518",
+  "0x1914c",
+  "0x3e0b8"
+ ],
+ "ready": {
+  "ip_ready": true,
+  "t_ready": 1791765187.2650208
+ },
+ "handler_hits_before": {
+  "0x1914c": 0
+ },
+ "reply": {
+  "replies": [
+   "3082003b02010004067075626c6963a282002c020224680201000201003082001e301c06082b0601020101010004104144414d2d363030305f536572696573"
+  ]
+ },
+ "drive_seconds": 10.0,
+ "handler_hits_delta": {
+  "0x1914c": 1
+ },
+ "cross_hits": {},
+ "first_hit": {
+  "0x1914c": {
+   "t": 1791765191.66572,
+   "regs": {
+    "r0": "0x20022f44",
+    "r1": "0x200122bc",
+    "r2": "0x20000148",
+    "r3": "0x0000a410",
+    "lr": "0x0001b26f",
+    "sp": "0x20028368"
+   }
+  }
+ },
+ "process_alive": true,
+ "final_hits": {
+  "0x1914c": 1,
+  "0x3eb64": 1
+ },
+ "finished": "2026-10-11T19:33:44"
+}

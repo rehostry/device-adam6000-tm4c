@@ -1,0 +1,86 @@
+{
+ "row": "device-adam6000-tm4c",
+ "entry": "http_config_server_80",
+ "proto": "tcp",
+ "port": 80,
+ "client": "http",
+ "handler_pcs": [
+  "0x36518"
+ ],
+ "handler_note": "HTTP request parser: compares the request against the image's 'GET /','HEAD /','POST /','OPTIONS /' table (literal 0x669E8)",
+ "input": "wellformed",
+ "reached": true,
+ "live_after": true,
+ "unexplained": null,
+ "load_avg": [
+  5.87158203125,
+  5.9189453125,
+  6.96484375
+ ],
+ "started": "2026-10-11T19:32:35",
+ "guest": {
+  "pid": 94831,
+  "python": "/Users/user/Development/rehostry/venvs-on-9bde2c0.noindex/adam6000-a71/bin/python",
+  "image_sha256": "5081b9fe6541e214f907895355043d7f726f3e385ddec521954745afc2b61b1d",
+  "core_unicorn_backend_sha256": "/Users/user/Development/rehostry/hal-b0818-on-9bde2c0/src/halucinator/backends/unicorn_backend.py e9af21330154ad42484002fe4c7236321925df29fdeecb7aac2d15c371f5b355",
+  "services_env": "snmp:39962:161:udp,ascii_udp:39963:1025:udp,probe5168_udp:39965:5168:udp",
+  "log": "/Users/user/Development/rehostry/device-adam6000-tm4c/evidence-s1011-laneB/reach-http_config_server_80/emulator.log.txt",
+  "keepalive": true,
+  "transport": {
+   "transport": "SocketTransport",
+   "host": "127.0.0.1",
+   "direct": false,
+   "tcp_map": {
+    "502": 39960,
+    "80": 39961
+   },
+   "udp_map": {
+    "161": 39962,
+    "1025": 39963,
+    "5168": 39965
+   }
+  }
+ },
+ "hooks_armed": true,
+ "hooks_pcs": [
+  "0x3eb64",
+  "0x36518",
+  "0x1914c",
+  "0x3e0b8"
+ ],
+ "ready": {
+  "ip_ready": true,
+  "t_ready": 1791765158.355734
+ },
+ "handler_hits_before": {
+  "0x36518": 0
+ },
+ "reply": {
+  "status": 404,
+  "server": "ADAM-6000/8.1.0019",
+  "bytes": 103
+ },
+ "drive_seconds": 14.05,
+ "handler_hits_delta": {
+  "0x36518": 1
+ },
+ "cross_hits": {},
+ "first_hit": {
+  "0x36518": {
+   "t": 1791765163.397378,
+   "regs": {
+    "r0": "0x2001bb14",
+    "r1": "0x00000033",
+    "r2": "0x00000000",
+    "r3": "0x0300000a",
+    "lr": "0x000351c9",
+    "sp": "0x20028328"
+   }
+  }
+ },
+ "process_alive": true,
+ "final_hits": {
+  "0x36518": 2
+ },
+ "finished": "2026-10-11T19:33:04"
+}

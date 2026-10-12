@@ -291,6 +291,16 @@ class NetPeer:
         self._send_tcp(TCP_SYN)
         self.snd_nxt += 1
 
+    def close(self) -> None:
+        """Our side is done: send FIN (batch s1011, HAL_ADAM_FIN_ON_CLOSE).
+        Without it a host client that disconnects mid-request leaves the
+        device's server holding a half-open connection for ever."""
+        if self.state == "ESTABLISHED":
+            self._send_tcp(TCP_FIN | TCP_ACK)
+            self.snd_nxt = (self.snd_nxt + 1) & 0xFFFFFFFF
+            self.state = "FIN_WAIT"
+            self.retry_connect = False
+
     def send(self, data: bytes) -> None:
         """Queue application data; sent once the connection is established."""
         self.pending_tx.extend(data)
