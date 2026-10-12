@@ -113,6 +113,16 @@ is imported by **path insert** (`REHOSTRY_PEERS_SRC`, default
 `../rehostry-peers/src`); the emulator child gets it on `PYTHONPATH`. Ports
 39960-39965 and 39978/39979 (lane s1011-laneB's block).
 
+Smoke test of `FuzzSession` (`evidence-s1011-laneB/fuzzsession-smoke/`), four
+inputs to the ASCII socket on one boot, no reboot needed: `$01M\r` hit the
+handler and answered; `#02\r` reported **0 hits and no reply**, and the NEXT
+input reported a hit plus an empty reply. Load was spiking past 50 from
+another lane at the time, so the likeliest reading is that `#02` was processed
+after the 1 s settle and its hit was booked to the next input. **Per-input
+attribution in `FuzzSession` is a time window and can lag under load**;
+`run_entry` (one fresh boot per input) does not have that problem. Not fixed;
+recorded as a limitation of the library's session mode.
+
 ### Not measured
 
 * The provisioned path (device profile) and its two walls — not touched.
