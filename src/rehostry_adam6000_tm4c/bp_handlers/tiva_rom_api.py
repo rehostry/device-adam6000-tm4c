@@ -249,7 +249,15 @@ class TivaRomApi(BPHandler):
         Passive -- the yield still runs.
         """
         from ..peripheral_models import device_profile
-        if not device_profile.provisioned():
+        # HAL_ADAM_DELAY_TICK=1 (batch s1011, OFF by default so graded runs are
+        # unchanged): tick here on the unprovisioned build too. Measured
+        # 2026-10-11: once "Backup_FW_Image success" prints, the unprovisioned
+        # firmware sits in this delay loop with no ROM calls, so the clock AND
+        # the network pump (both paced off ROM calls) stop and the device goes
+        # deaf for good -- every later TCP/UDP exchange times out. A fuzzer
+        # needs a guest that outlives the first minute.
+        if (not device_profile.provisioned()
+                and os.environ.get("HAL_ADAM_DELAY_TICK") != "1"):
             return False, None
         self._tick(qemu)
         return False, None

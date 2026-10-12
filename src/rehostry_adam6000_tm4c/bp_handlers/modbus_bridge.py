@@ -69,6 +69,21 @@ def http_bridge_port() -> int:
     return int(os.environ.get("HAL_ADAM_HTTP_BRIDGE_PORT", "0"), 0)
 
 
+def extra_services() -> List[Tuple[str, int, int, str]]:
+    """HAL_ADAM_SERVICES="name:hostport:devport[:tcp|udp],..." -- further
+    host ports, each wired to one device port through its OWN modelled peer
+    (batch s1011 fuzz reach). Unset means none, so a run that does not ask
+    is byte-identical to before."""
+    out = []
+    for item in os.environ.get("HAL_ADAM_SERVICES", "").split(","):
+        if not item.strip():
+            continue
+        f = item.strip().split(":")
+        out.append((f[0], int(f[1], 0), int(f[2], 0),
+                    f[3] if len(f) > 3 else "tcp"))
+    return out
+
+
 _BRIDGE: Optional["ModbusBridge"] = None
 
 
@@ -112,6 +127,12 @@ class ModbusBridge(BPHandler):
         if http_port:
             self.services.append(
                 _Service("http", http_port, HTTP_TCP_PORT, "http"))
+        self.udp_services: List[_Service] = []
+        for k, (name, hport, dport, proto) in enumerate(extra_services()):
+            svc = _Service(name, hport, dport, "svc%d" % (4 + k))
+            svc.local_port = 42000 + 100 * k
+            (self.udp_services if proto == "udp"
+             else self.services).append(svc)
         # Back-compat for anything that read these off the bridge.
         self.clients = self.services[0].clients
         self._lock = self.services[0].lock
@@ -156,6 +177,50 @@ class ModbusBridge(BPHandler):
                         dead.append(sock)
                 for sock in dead:
                     svc.clients.remove(sock)
+
+        for svc in self.udp_services:
+            peer = svc.peer
+            while peer.udp_rx:
+                sport, dport, data = peer.udp_rx.pop(0)
+                addr = getattr(svc, "host_addr", None)
+                if addr is None or sport != svc.dev_port:
+                    continue
+                svc.to_host += len(data)
+                try:
+                    svc.udp_sock.sendto(data, addr)
+                except OSError:
+                    pass
+
+    def _serve_udp(self, svc: _Service) -> None:
+        """A host UDP port: each datagram goes to the device's `dev_port`
+        from this service's own peer, and the device's replies to that
+        peer's source port come back to the last host sender."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.bind(("127.0.0.1", svc.host_port))
+        except OSError as exc:
+            log.error("Bridge[%s]: cannot bind udp/%d (%s)", svc.name,
+                      svc.host_port, exc)
+            return
+        svc.udp_sock = sock
+        peer = svc.peer
+        log.info("Bridge[%s]: udp/%d -- carried over modelled Ethernet from "
+                 "%s to %s:%d", svc.name, svc.host_port,
+                 ".".join(str(b) for b in peer.ip),
+                 ".".join(str(b) for b in peer.device_ip), svc.dev_port)
+        while True:
+            try:
+                data, addr = sock.recvfrom(65536)
+            except OSError:
+                return
+            svc.host_addr = addr
+            if peer.device_mac is None:
+                peer.arp_request()
+                deadline = time.time() + 20
+                while peer.device_mac is None and time.time() < deadline:
+                    time.sleep(0.1)
+            svc.to_device += len(data)
+            peer.send_udp(svc.dev_port, data, sport=svc.local_port)
 
     # -- from the host -----------------------------------------------------
     def _serve(self, svc: _Service) -> None:
@@ -225,6 +290,9 @@ class ModbusBridge(BPHandler):
             self._started = True
             for svc in self.services:
                 threading.Thread(target=self._serve, args=(svc,),
+                                 daemon=True).start()
+            for svc in self.udp_services:
+                threading.Thread(target=self._serve_udp, args=(svc,),
                                  daemon=True).start()
         self.pump()
         return True, 1

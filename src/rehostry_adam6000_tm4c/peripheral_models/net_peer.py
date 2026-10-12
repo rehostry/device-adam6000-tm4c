@@ -79,6 +79,18 @@ PEER_IDENTITIES = {
                                           "0200005e1003")),
              os.environ.get("HAL_ADAM_HTTP_PEER_IP", "10.0.0.3")),
 }
+#: Further machines for the generic per-service bridges (HAL_ADAM_SERVICES,
+#: batch s1011 fuzz reach). One machine per service, as above: its own MAC and
+#: its own IP, so no two services share a peer's single TCP connection.
+for _k in range(4, 16):
+    PEER_IDENTITIES["svc%d" % _k] = (bytes.fromhex("0200005e10%02x" % (0x20 + _k)),
+                                     "10.0.0.%d" % (20 + _k))
+IP_PROTO_UDP = 17
+
+#: Every (proto, dst ip, dst port) the DEVICE has put on the wire, first time
+#: seen -- so an outbound client that fires in this configuration is visible
+#: in the log even though no peer answers it.
+_WIRE_SEEN: Dict[tuple, int] = {}
 
 
 def ip_to_bytes(text: str) -> bytes:
@@ -137,6 +149,11 @@ class NetPeer:
         self.frames_in = 0
         self.frames_out = 0
         self.arp_replies = 0
+        #: UDP datagrams the device sent to THIS peer: (sport, dport, payload).
+        self.udp_rx: List[Tuple[int, int, bytes]] = []
+        #: ICMP destination-unreachable the device sent to this peer:
+        #: (code, proto, port).
+        self.icmp_unreach: List[Tuple[int, int, int]] = []
 
     def set_send(self, send: Callable[[bytes], None]) -> None:
         self._send = send
@@ -182,6 +199,15 @@ class NetPeer:
                     ".".join(str(b) for b in body[24:28]))
             log.info("PEER saw: %s dst=%s src=%s%s", kind, dst.hex(":"),
                      src.hex(":"), note)
+        if self.name == "default" and ethertype == ETH_IPV4 and len(body) >= 24:
+            ihl = (body[0] & 0x0F) * 4
+            key = (body[9], ".".join(str(b) for b in body[16:20]),
+                   int.from_bytes(body[ihl + 2:ihl + 4], "big")
+                   if body[9] in (IP_PROTO_TCP, IP_PROTO_UDP) else -1)
+            if key not in _WIRE_SEEN:
+                log.info("WIRE: device sent proto=%d to %s port %d "
+                         "(first time)", *key)
+            _WIRE_SEEN[key] = _WIRE_SEEN.get(key, 0) + 1
         if dst != BROADCAST and dst != self.mac:
             if self.frames_in <= 12:
                 log.info("PEER: ignored -- not addressed to %s",
@@ -343,10 +369,42 @@ class NetPeer:
         ihl = (body[0] & 0x0F) * 4
         proto = body[9]
         src_ip, dst_ip = body[12:16], body[16:20]
-        if dst_ip != self.ip or proto != IP_PROTO_TCP:
+        if dst_ip != self.ip:
+            return
+        if proto == IP_PROTO_UDP and len(body) >= ihl + 8:
+            u = body[ihl:]
+            sport = int.from_bytes(u[0:2], "big")
+            dport = int.from_bytes(u[2:4], "big")
+            ulen = int.from_bytes(u[4:6], "big")
+            self.device_mac = src_mac
+            self.udp_rx.append((sport, dport, bytes(u[8:max(8, ulen)])))
+            log.info("PEER[%s]: UDP %d->%d len=%d", self.name, sport, dport,
+                     max(0, ulen - 8))
+            return
+        if proto == IP_PROTO_ICMP and len(body) >= ihl + 8 + 24 \
+                and body[ihl] == 3:
+            inner = body[ihl + 8:]
+            iihl = (inner[0] & 0x0F) * 4
+            port = int.from_bytes(inner[iihl + 2:iihl + 4], "big")
+            self.icmp_unreach.append((body[ihl + 1], inner[9], port))
+            log.info("PEER[%s]: ICMP unreachable code=%d proto=%d port=%d",
+                     self.name, body[ihl + 1], inner[9], port)
+            return
+        if proto != IP_PROTO_TCP:
             return
         self.device_mac = src_mac
         self._on_tcp(body[ihl:])
+
+    def send_udp(self, dport: int, payload: bytes, sport: int) -> None:
+        """One UDP datagram to the device, payload verbatim. Checksum 0 is
+        legal for UDP over IPv4 (RFC 768)."""
+        if self.device_mac is None:
+            return
+        udp = (sport.to_bytes(2, "big") + dport.to_bytes(2, "big")
+               + (8 + len(payload)).to_bytes(2, "big") + b"\x00\x00"
+               + payload)
+        self._emit(self._eth(self.device_mac, ETH_IPV4,
+                             self._ipv4(IP_PROTO_UDP, udp)))
 
     def _on_tcp(self, seg: bytes) -> None:
         if len(seg) < 20:
